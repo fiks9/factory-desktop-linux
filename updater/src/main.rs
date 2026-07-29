@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use factory_update_manager::builder::{BuildRequest, NodeBuilder, PackageFormat};
 use factory_update_manager::cache::DmgCache;
 use factory_update_manager::cleanup::cleanup;
+use factory_update_manager::daemon::{blocks_new_candidate, read_check_interval_seconds};
 use factory_update_manager::diagnose::diagnose;
 use factory_update_manager::install::{install_validated, InstallOutcome};
 use factory_update_manager::locks::UpdateLock;
@@ -17,6 +18,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::thread;
+use std::time::Duration;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -53,7 +56,10 @@ enum Commands {
         #[arg(long, value_enum)]
         format: Option<FormatArg>,
     },
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Diagnose,
     InstallReady,
     InstallDeb {
@@ -66,6 +72,10 @@ enum Commands {
         manifest: PathBuf,
     },
     Rollback,
+    Daemon {
+        #[arg(long, hide = true)]
+        once: bool,
+    },
     Service,
 }
 
@@ -113,8 +123,12 @@ fn run(cli: Cli) -> Result<(), Error> {
             version,
             format,
         } => check_now(&context, Some(dmg), Some(version), format.map(Into::into)),
-        Commands::Status => with_user_state(|_, store, state| {
-            print_json(&serde_json::json!({"state": state, "stateFile": store.path()}))
+        Commands::Status { json: _ } => with_user_state(|_, store, state| {
+            print_json(&serde_json::json!({
+                "schemaVersion": 1,
+                "state": state,
+                "stateFile": store.path()
+            }))
         }),
         Commands::Diagnose => {
             with_user_state(|paths, _, state| print_json(&diagnose(paths, &state)))
@@ -132,7 +146,8 @@ fn run(cli: Cli) -> Result<(), Error> {
             factory_update_manager::builder::load_candidate_manifest(&manifest)?.format,
         ),
         Commands::Rollback => privileged_rollback(),
-        Commands::Service => service_recovery(),
+        Commands::Daemon { once } => run_daemon(&context, once),
+        Commands::Service => run_daemon(&context, false),
     }
 }
 
@@ -145,15 +160,25 @@ fn with_user_state<T>(
     operation(&paths, &store, store.load()?)
 }
 
+fn with_locked_user_state<T>(
+    operation: impl FnOnce(&Paths, &StateStore, StateRecord) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let paths = Paths::resolve(None)?;
+    paths.ensure_all()?;
+    let store = StateStore::new(paths.state_file());
+    let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
+    let state = store.load()?;
+    operation(&paths, &store, state)
+}
+
 fn check_now(
     context: &Context,
     pinned_dmg: Option<PathBuf>,
     supplied_version: Option<String>,
     supplied_format: Option<PackageFormat>,
 ) -> Result<(), Error> {
-    with_user_state(|paths, store, mut state| {
-        let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
-        if state.state == State::ReadyPendingExit {
+    with_locked_user_state(|paths, store, mut state| {
+        if blocks_new_candidate(state.state) {
             return print_json(&state);
         }
         cleanup(paths, &state)?;
@@ -300,8 +325,7 @@ fn transition(
 }
 
 fn install_ready(_context: &Context) -> Result<(), Error> {
-    with_user_state(|paths, store, mut state| {
-        let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
+    with_locked_user_state(|paths, store, mut state| {
         if state.state != State::ReadyPendingExit {
             return Err("no validated update is waiting for application exit".into());
         }
@@ -423,19 +447,41 @@ fn privileged_rollback() -> Result<(), Error> {
     }
 }
 
-fn service_recovery() -> Result<(), Error> {
-    with_user_state(|paths, store, mut state| {
-        let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
-        if state.state == State::Installing {
-            transition(
-                store,
-                &mut state,
-                State::InstallFailedManualAction,
-                "interrupted privileged installation requires explicit user action",
-            )?;
+fn recover_interrupted_install(paths: &Paths) -> Result<StateRecord, Error> {
+    let store = StateStore::new(paths.state_file());
+    let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
+    let mut state = store.load()?;
+    if state.state == State::Installing {
+        transition(
+            &store,
+            &mut state,
+            State::InstallFailedManualAction,
+            "interrupted privileged installation requires explicit user action",
+        )?;
+    }
+    cleanup(paths, &state)?;
+    Ok(state)
+}
+
+fn run_daemon(context: &Context, once: bool) -> Result<(), Error> {
+    let paths = Paths::resolve(None)?;
+    paths.ensure_all()?;
+    let _daemon_lock = UpdateLock::acquire(&paths.daemon_lock_file())?;
+    let interval = read_check_interval_seconds(&paths.config_dir.join("config.toml"))?;
+    let mut state = recover_interrupted_install(&paths)?;
+
+    loop {
+        if !blocks_new_candidate(state.state) {
+            if let Err(error) = check_now(context, None, None, None) {
+                eprintln!("factory-update-manager daemon check failed: {error}");
+            }
         }
-        Ok(())
-    })
+        if once {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(interval));
+        state = StateStore::new(paths.state_file()).load()?;
+    }
 }
 
 fn require_root() -> Result<(), Error> {

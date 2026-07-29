@@ -129,15 +129,29 @@ test("rpm versions cannot silently drop prerelease identity", () => {
   assert.throws(() => rpmVersion("0.140.0-beta.1"), /prerelease/);
 });
 
-test("native package lifecycle wires only the recovery service", () => {
+test("native package lifecycle enables and reloads both user services", () => {
   const postinst = fs.readFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.postinst"), "utf8");
   const prerm = fs.readFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.prerm"), "utf8");
+  const service = fs.readFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-update-manager.service"), "utf8");
   const { RPM_POST_INSTALL, RPM_PRE_UNINSTALL } = require("../scripts/package-contract");
-  assert.match(postinst, /systemctl --global enable factory-update-manager\.service/);
-  assert.match(prerm, /systemctl --global disable factory-update-manager\.service/);
-  assert.match(RPM_POST_INSTALL, /systemctl --global enable factory-update-manager\.service/);
-  assert.match(RPM_PRE_UNINSTALL, /systemctl --global disable factory-update-manager\.service/);
-  for (const text of [postinst, prerm, RPM_POST_INSTALL, RPM_PRE_UNINSTALL]) {
-    assert.doesNotMatch(text, /enable --now|start factory-update-manager/);
+  for (const name of ["factory-update-manager.service", "factory-droid-daemon.service"]) {
+    for (const text of [postinst, prerm, RPM_POST_INSTALL, RPM_PRE_UNINSTALL]) {
+      assert.match(text, new RegExp(name.replaceAll(".", "\\.")));
+    }
   }
+  assert.match(postinst, /systemctl --global enable/);
+  assert.match(prerm, /systemctl --global disable/);
+  assert.match(RPM_POST_INSTALL, /systemctl --global enable/);
+  assert.match(RPM_PRE_UNINSTALL, /systemctl --global disable/);
+  for (const text of [postinst, RPM_POST_INSTALL]) assert.match(text, /systemctl --user enable --now/);
+  for (const text of [prerm, RPM_PRE_UNINSTALL]) assert.match(text, /systemctl --user disable --now/);
+  for (const text of [postinst, prerm, RPM_POST_INSTALL, RPM_PRE_UNINSTALL]) {
+    assert.match(text, /systemctl --user daemon-reload/);
+    assert.doesNotMatch(text, /systemctl --global daemon-reload/);
+  }
+  assert.match(service, /Type=simple/);
+  assert.match(service, /ExecStart=\/usr\/bin\/factory-update-manager daemon/);
+  assert.match(service, /Restart=on-failure/);
+  const restartSec = Number(service.match(/RestartSec=(\d+)/)?.[1]);
+  assert.ok(restartSec >= 30);
 });

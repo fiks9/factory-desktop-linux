@@ -28,7 +28,9 @@ packages carry the updater; AppImage stays updater-unavailable.
 ## Phase 5
 
 In-app update UX, app-exit installation, polkit detection, terminal fallback,
-and opt-in unattended installation.
+and opt-in unattended installation backed by root-side approval and attestation.
+User-owned manifests, package paths, and hashes are not sufficient authorization
+for unattended root installation.
 
 ## Phase 6
 

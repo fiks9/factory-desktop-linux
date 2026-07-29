@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod cache;
 pub mod cleanup;
+pub mod daemon;
 pub mod diagnose;
 pub mod download;
 pub mod install;

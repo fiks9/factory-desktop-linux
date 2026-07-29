@@ -23,8 +23,9 @@ reports the native updater as unavailable.
 - Native packages use a `systemd --user` updater; AppImage does not assume a
   system-installed updater helper exists.
 - The default privileged update path requires a graphical polkit agent or
-  reports an explicit terminal fallback. Passwordless unattended installation
-  is opt-in and separately validated.
+  reports an explicit terminal fallback. Unattended configuration is opt-in,
+  but passwordless root installation remains disabled until Phase 5 adds
+  root-side approval and attestation.
 
 ## Planned Formats
 

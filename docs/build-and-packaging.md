@@ -87,8 +87,11 @@ staging copies only source manifests plus `src`/`dist`, runs
 `npm ci --omit=dev`, and scans the resulting isolated tree.
 
 Native `.deb` and `.rpm` packages include the Droid user service and secure
-polkit policy, the Rust update-manager binary, a user recovery service, and an
+polkit policy, the Rust update-manager binary, the updater daemon service, and an
 isolated update-builder tree under `/usr/lib/factory-desktop/update-builder`.
+Package installation globally enables both user services and best-effort reloads
+and starts them for active user managers. Package removal best-effort stops and
+disables both services for active managers, then removes their global enablement.
 Portable AppImage omits native services, policy, and updater binary; its AppRun
 exports an unavailable updater path and supports the optional
 `--install-desktop-integration` command.

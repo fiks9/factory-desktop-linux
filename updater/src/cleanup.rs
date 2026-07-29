@@ -16,9 +16,12 @@ pub fn cleanup(paths: &Paths, state: &StateRecord) -> io::Result<()> {
         }
     }
     if paths.workspaces_dir().exists() {
-        let keep = matches!(state.state, State::ReadyPendingExit)
-            .then_some(state.candidate_id.as_deref())
-            .flatten();
+        let keep = matches!(
+            state.state,
+            State::ReadyPendingExit | State::Installing | State::InstallFailedManualAction
+        )
+        .then_some(state.candidate_id.as_deref())
+        .flatten();
         for entry in fs::read_dir(paths.workspaces_dir())? {
             let entry = entry?;
             if entry.file_type()?.is_dir()

@@ -4,9 +4,10 @@
 //! All paths are rooted under XDG-style user directories so the daemon
 //! never needs root to run:
 //!
-//! - `~/.config/factory-update-manager/config.toml` (not yet used; reserved)
+//! - `~/.config/factory-update-manager/config.toml`
 //! - `~/.local/state/factory-update-manager/state.json`
 //! - `~/.local/state/factory-update-manager/state.lock`
+//! - `~/.local/state/factory-update-manager/daemon.lock`
 //! - `~/.cache/factory-update-manager/downloads/Factory-<sha256>.dmg`
 //! - `~/.cache/factory-update-manager/workspaces/<candidate-id>/`
 
@@ -68,6 +69,10 @@ impl Paths {
 
     pub fn state_lock_file(&self) -> PathBuf {
         self.state_dir.join("state.lock")
+    }
+
+    pub fn daemon_lock_file(&self) -> PathBuf {
+        self.state_dir.join("daemon.lock")
     }
 
     pub fn downloads_dir(&self) -> PathBuf {

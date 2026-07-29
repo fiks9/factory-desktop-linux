@@ -1,5 +1,8 @@
 use factory_update_manager::cache::{sha256_file, DmgCache, Workspace};
 use factory_update_manager::cleanup::cleanup;
+use factory_update_manager::daemon::{
+    blocks_new_candidate, read_check_interval_seconds, DEFAULT_CHECK_INTERVAL_SECONDS,
+};
 use factory_update_manager::locks::UpdateLock;
 use factory_update_manager::paths::Paths;
 use factory_update_manager::state::{State, StateRecord, StateStore};
@@ -118,4 +121,78 @@ fn cleanup_keeps_only_a_ready_candidate_workspace() {
     };
     cleanup(&paths, &installed).unwrap();
     assert!(!candidate.exists());
+}
+
+#[test]
+fn daemon_interval_defaults_to_six_hours_and_is_configurable() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.toml");
+
+    assert_eq!(
+        read_check_interval_seconds(&config).unwrap(),
+        DEFAULT_CHECK_INTERVAL_SECONDS
+    );
+    fs::write(&config, "check_interval_seconds = 900\n").unwrap();
+    assert_eq!(read_check_interval_seconds(&config).unwrap(), 900);
+    fs::write(&config, "check_interval_seconds = 5\n").unwrap();
+    assert!(read_check_interval_seconds(&config).is_err());
+}
+
+#[test]
+fn daemon_blocks_candidate_replacement_for_pending_install_states() {
+    for state in [
+        State::ReadyPendingExit,
+        State::Installing,
+        State::InstallFailedManualAction,
+    ] {
+        assert!(blocks_new_candidate(state));
+    }
+    for state in [
+        State::Idle,
+        State::Installed,
+        State::RolledBack,
+        State::Failed,
+    ] {
+        assert!(!blocks_new_candidate(state));
+    }
+}
+
+#[test]
+fn cleanup_retains_installing_and_manual_candidates_but_removes_idle_and_installed() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = Paths::resolve(Some(root.path())).unwrap();
+    paths.ensure_all().unwrap();
+
+    for state in [State::Installing, State::InstallFailedManualAction] {
+        let candidate = paths.workspaces_dir().join("candidate-139");
+        let stale = paths.workspaces_dir().join("candidate-138");
+        fs::create_dir_all(&candidate).unwrap();
+        fs::create_dir_all(&stale).unwrap();
+        cleanup(
+            &paths,
+            &StateRecord {
+                state,
+                candidate_id: Some("candidate-139".into()),
+                ..StateRecord::default()
+            },
+        )
+        .unwrap();
+        assert!(candidate.exists());
+        assert!(!stale.exists());
+    }
+
+    for state in [State::Idle, State::Installed] {
+        let stale = paths.workspaces_dir().join("candidate-139");
+        fs::create_dir_all(&stale).unwrap();
+        cleanup(
+            &paths,
+            &StateRecord {
+                state,
+                candidate_id: Some("candidate-139".into()),
+                ..StateRecord::default()
+            },
+        )
+        .unwrap();
+        assert!(!stale.exists());
+    }
 }

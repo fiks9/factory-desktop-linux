@@ -1,10 +1,13 @@
 [Unit]
-Description=Factory Desktop update-manager recovery
-After=graphical-session.target
+Description=Factory Desktop update manager
+After=network-online.target graphical-session.target
+Wants=network-online.target
 
 [Service]
-Type=oneshot
-ExecStart=/usr/bin/factory-update-manager service
+Type=simple
+ExecStart=/usr/bin/factory-update-manager daemon
+Restart=on-failure
+RestartSec=60
 
 [Install]
 WantedBy=default.target
