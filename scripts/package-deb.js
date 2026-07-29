@@ -5,6 +5,7 @@ const path = require("node:path");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout, sha256 } = require("./runtime");
+const { scanPackageTree } = require("./package-hygiene");
 
 const REQUIRED_PATCHES = [
   "daemon-transport-force-websocket",
@@ -76,8 +77,10 @@ function buildDeb(options) {
   assertNoWorkspaceSymlinks(appDir);
   assertNoBundledDroid(appDir);
   assertAcceptedPatchReport(appDir);
+  scanPackageTree(appDir, { workspaceRoot: process.cwd() });
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deb-"));
+  try {
   const root = path.join(temp, "root");
   const control = path.join(root, "DEBIAN");
   fs.mkdirSync(control, { recursive: true, mode: 0o755 });
@@ -86,6 +89,7 @@ function buildDeb(options) {
   fs.mkdirSync(path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "lib", "factory-desktop"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "lib", "systemd", "user"), { recursive: true });
+  fs.mkdirSync(path.join(root, "usr", "share", "polkit-1", "actions"), { recursive: true });
   copyRecursive(appDir, path.join(root, "opt", "Factory"));
 
   const desktop = path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.desktop");
@@ -95,6 +99,7 @@ function buildDeb(options) {
   fs.copyFileSync(daemonScript, path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"));
   fs.chmodSync(path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"), 0o755);
   fs.copyFileSync(daemonService, path.join(root, "usr", "lib", "systemd", "user", "factory-droid-daemon.service"));
+  fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "org.factory.desktop.update-manager.policy"), path.join(root, "usr", "share", "polkit-1", "actions", "org.factory.desktop.update-manager.policy"));
   if (options.iconPath && fs.existsSync(options.iconPath)) fs.copyFileSync(options.iconPath, path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"));
   for (const script of ["factory-desktop.postinst", "factory-desktop.prerm", "factory-desktop.postrm"]) {
     fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", script), path.join(control, script));
@@ -118,7 +123,13 @@ function buildDeb(options) {
   const output = path.join(outputDir, `factory-desktop_${version}_amd64.deb`);
   fs.rmSync(output, { force: true });
   execFileSync("dpkg-deb", ["--build", "--root-owner-group", root, output], { stdio: "inherit", timeout: 10 * 60 * 1000 });
+  const extracted = path.join(temp, "extracted");
+  execFileSync("dpkg-deb", ["--extract", output, extracted], { stdio: "ignore", timeout: 10 * 60 * 1000 });
+  scanPackageTree(extracted, { workspaceRoot: process.cwd() });
   return { path: output, sha256: sha256(output), bytes: fs.statSync(output).size };
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 if (require.main === module) {

@@ -7,6 +7,11 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { patchAsar } = require("../../patcher/src/engine");
 const { listJavaScriptFiles, readFile } = require("../../patcher/src/asar-io");
+const { buildApp } = require("../../scripts/build-app");
+const { buildDeb } = require("../../scripts/package-deb");
+const { buildRpm } = require("../../scripts/package-rpm");
+const { buildAppImage } = require("../../scripts/package-appimage");
+const { inspectPackage } = require("../../scripts/inspect-package");
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "manifest.json"), "utf8"));
 
@@ -23,6 +28,9 @@ async function materialize(entry, sourcePath, root) {
 }
 
 (async () => {
+  const harnessRoot = process.env.FACTORY_TEST_TMP_ROOT;
+  if (!harnessRoot || !path.isAbsolute(harnessRoot)) throw new Error("FACTORY_TEST_TMP_ROOT must be an absolute controlled temporary directory");
+  fs.mkdirSync(harnessRoot, { recursive: true });
   let exercised = 0;
   for (const entry of manifest.fixtures) {
     const sourcePath = entry.paths.find((candidate) => fs.existsSync(candidate));
@@ -30,7 +38,9 @@ async function materialize(entry, sourcePath, root) {
       console.log(`${entry.version}: SKIP (local fixture unavailable)`);
       continue;
     }
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `factory-${entry.version}-`));
+    const root = path.join(harnessRoot, entry.version);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(root, { recursive: true });
     const asarPath = await materialize(entry, sourcePath, root);
     const before = listJavaScriptFiles(asarPath).some((file) => readFile(asarPath, file).includes("/* factory-linux:"));
     if (entry.negative_fixture && before) throw new Error(`${entry.version}: foreign fixture unexpectedly contains our markers`);
@@ -44,6 +54,19 @@ async function materialize(entry, sourcePath, root) {
         throw new Error(`${entry.version}: second patch run was not idempotent`);
       }
       console.log(`${entry.version}: PASS (${entry.transport_shape}, ${transport.patched ? "patched" : "validated"})`);
+      if (!entry.negative_fixture && sourcePath.endsWith(".dmg")) {
+        const built = await buildApp({ dmg: sourcePath, version: entry.version, cacheDir: path.join(root, "downloads"), workDir: path.join(root, "work") });
+        const dist = path.join(root, "dist");
+        const artifacts = [
+          buildDeb({ appDir: built.appDir, version: entry.version, outputDir: dist }),
+          buildRpm({ appDir: built.appDir, version: entry.version, outputDir: dist }),
+          await buildAppImage({ appDir: built.appDir, version: entry.version, outputDir: dist, cacheDir: path.join(root, "appimage-cache") }),
+        ];
+        for (const artifact of artifacts) {
+          const inspected = inspectPackage(artifact.path);
+          console.log(`${entry.version}: ${inspected.format} PASS ${artifact.sha256} ${artifact.bytes}`);
+        }
+      }
     } catch (error) {
       if (!entry.negative_fixture) throw error;
       console.log(`${entry.version}: PASS negative fixture failed closed (${error.message})`);

@@ -8,5 +8,21 @@ export FACTORY_DISABLE_KEYRING=1
 if [[ ! -x "${FACTORY_UPDATE_MANAGER_PATH:-/usr/bin/factory-update-manager}" ]]; then
   export FACTORY_UPDATE_MANAGER_UNAVAILABLE=1
 fi
+export FACTORY_UPDATE_MANAGER_PATH="${FACTORY_UPDATE_MANAGER_PATH:-$APPDIR/.factory-no-native-updater}"
+
+if [[ "${1:-}" == --install-desktop-integration ]]; then
+  appimage_path="${APPIMAGE:-}"
+  if [[ -z "$appimage_path" ]]; then
+    printf '%s\n' 'Desktop integration requires running the AppImage file.' >&2
+    exit 2
+  fi
+  applications="$HOME/.local/share/applications"
+  mkdir -p "$applications"
+  sed "s|^Exec=.*|Exec=env FACTORY_DISABLE_KEYRING=1 FACTORY_UPDATE_MANAGER_PATH=$APPDIR/.factory-no-native-updater $appimage_path %U|" \
+    "$APPDIR/factory-desktop.desktop" > "$applications/factory-desktop.desktop"
+  update-desktop-database "$applications" >/dev/null 2>&1 || true
+  xdg-mime default factory-desktop.desktop x-scheme-handler/factory-desktop >/dev/null 2>&1 || true
+  exit 0
+fi
 
 exec "$APPDIR/usr/lib/factory-desktop/factory-desktop" "$@"

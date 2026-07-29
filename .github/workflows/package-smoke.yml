@@ -1,0 +1,44 @@
+name: Package Smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: patcher/package-lock.json
+      - name: Install package tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y 7zip cpio desktop-file-utils rpm squashfs-tools
+      - name: Install patcher dependencies
+        run: npm ci --prefix patcher --ignore-scripts
+      - name: Build and inspect synthetic pinned packages
+        run: make package-smoke VERSION=0.139.0 DIST_DIR=dist
+      - name: Extract and inspect all artifacts
+        run: |
+          node scripts/inspect-package.js dist/*.deb
+          node scripts/inspect-package.js dist/*.rpm
+          node scripts/inspect-package.js dist/*.AppImage
+      - name: Upload accepted artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-desktop-linux-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+          if-no-files-found: error

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Factory Desktop
+Comment=Factory Desktop for Linux
+Exec=AppRun %U
+Icon=factory-desktop
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=Factory
+MimeType=x-scheme-handler/factory-desktop;

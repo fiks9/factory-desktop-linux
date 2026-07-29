@@ -77,5 +77,19 @@ The shim executes the product-named ELF directly, so the final process keeps
 the product identity. The production desktop entry invokes the shim and
 registers only `factory-desktop://`; it does not register a `-dev` scheme.
 
+## Package Hygiene
+
+Every staged tree and every extracted package is scanned before acceptance.
+The blocking scanner rejects absolute or workspace symlinks, broken or
+absolute `node_modules/.bin` links, non-executable bin targets, non-executable
+native ELF tools, and non-executable `7zip-bin/**/7za` payloads. Update-builder
+staging copies only source manifests plus `src`/`dist`, runs
+`npm ci --omit=dev`, and scans the resulting isolated tree.
+
+Native `.deb` and `.rpm` packages include the Droid user service and secure
+polkit policy. Portable AppImage omits native services, policy, and updater
+binary; its AppRun exports an unavailable updater path and supports the
+optional `--install-desktop-integration` command.
+
 Real DMG smoke builds are local-only in Phase 1. Proprietary DMGs and extracted
 payloads must remain outside git and outside public CI artifacts.

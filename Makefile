@@ -1,16 +1,20 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-real-bundles lint typecheck bash-check rust-check build-app deb appimage updater smoke-dmg
+.PHONY: check test test-real-bundles package-smoke lint typecheck bash-check rust-check build-app deb rpm appimage updater smoke-dmg
 
 check: lint typecheck bash-check rust-check
 
 test:
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js
+	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js tests/package-hygiene.test.js
 
 test-real-bundles:
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@node tests/bundle-regression/run-local.js
+	@TMP_ROOT=$$(mktemp -d -t factory-real-harness-XXXXXX); trap 'rm -rf "$$TMP_ROOT"' EXIT; FACTORY_TEST_TMP_ROOT="$$TMP_ROOT" node tests/bundle-regression/run-local.js
+
+package-smoke:
+	@npm ci --prefix patcher --ignore-scripts >/dev/null
+	@node scripts/package-smoke.js "$(DIST_DIR)" "$(or $(VERSION),0.139.0)"
 
 lint:
 	@node --check scripts/phase0-check.js
@@ -38,9 +42,14 @@ build-app:
 deb:
 	@node scripts/package-deb.js "$(APP_DIR)" "$(VERSION)" "$(DIST_DIR)"
 
+rpm:
+	@node scripts/package-rpm.js "$(APP_DIR)" "$(VERSION)" "$(DIST_DIR)"
+
 appimage:
-	@printf '%s\n' 'Phase 3 is not implemented: AppImage assembly is intentionally fail-closed.' >&2
-	@exit 2
+	@node scripts/package-appimage.js "$(APP_DIR)" "$(VERSION)" "$(DIST_DIR)"
+
+inspect-package:
+	@node scripts/inspect-package.js "$(ARTIFACT)"
 
 updater:
 	@printf '%s\n' 'Phase 4 is not implemented: updater packaging is intentionally fail-closed.' >&2
