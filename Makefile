@@ -1,11 +1,16 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: check test lint typecheck bash-check rust-check build-app deb appimage updater smoke-dmg
+.PHONY: check test test-real-bundles lint typecheck bash-check rust-check build-app deb appimage updater smoke-dmg
 
 check: lint typecheck bash-check rust-check
 
 test:
-	@node --test patcher/tests/contract.test.js tests/phase1.test.js
+	@npm ci --prefix patcher --ignore-scripts >/dev/null
+	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js
+
+test-real-bundles:
+	@npm ci --prefix patcher --ignore-scripts >/dev/null
+	@node tests/bundle-regression/run-local.js
 
 lint:
 	@node --check scripts/phase0-check.js
@@ -18,6 +23,8 @@ typecheck:
 bash-check:
 	@bash -n scripts/phase0-check.sh
 	@bash -n launcher/start.sh.template
+	@bash -n packaging/appimage/AppRun.template
+	@bash -n packaging/linux/factory-droid-daemon.sh
 	@bash -n packaging/linux/factory-desktop.postinst packaging/linux/factory-desktop.prerm packaging/linux/factory-desktop.postrm
 
 rust-check:
@@ -25,6 +32,7 @@ rust-check:
 	@cargo test --manifest-path updater/Cargo.toml
 
 build-app:
+	@npm ci --prefix patcher --ignore-scripts >/dev/null
 	@node scripts/build-app.js $(if $(DMG),--dmg "$(DMG)",) $(if $(VERSION),--version "$(VERSION)",)
 
 deb:
@@ -40,6 +48,7 @@ updater:
 
 smoke-dmg:
 	@if [[ -z "$(DMG)" ]]; then printf '%s\n' 'Usage: make smoke-dmg DMG=/absolute/path/Factory.dmg [VERSION=0.139.0]' >&2; exit 2; fi
+	@npm ci --prefix patcher --ignore-scripts >/dev/null
 	@node scripts/build-app.js --dmg "$(DMG)" $(if $(VERSION),--version "$(VERSION)",)
 
 APP_DIR ?= work/latest/app

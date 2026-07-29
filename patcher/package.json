@@ -1,12 +1,14 @@
 {
   "name": "factory-desktop-linux-patcher",
   "private": true,
-  "version": "0.0.0-phase0",
+  "version": "0.0.0-phase2",
   "description": "Fail-closed ASAR patch contracts for Factory Desktop Linux",
-  "type": "module",
   "scripts": {
-    "check": "node --check src/contract.js",
-    "test": "node --test tests/contract.test.js",
+    "check": "node --check src/contract.js && node --check src/asar-io.js && node --check src/engine.js && node --check src/patches.js && node --check src/validators.js",
+    "test": "node --test tests/contract.test.js tests/patcher.test.js",
     "typecheck": "node src/contract.js --typecheck"
+  },
+  "dependencies": {
+    "@electron/asar": "^4.2.1"
   }
 }

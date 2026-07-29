@@ -2,11 +2,11 @@
 
 "use strict";
 
-export const CRITICAL_POLICY = "required-upstream";
-export const OPTIONAL_POLICY = "optional";
+const CRITICAL_POLICY = "required-upstream";
+const OPTIONAL_POLICY = "optional";
 
-export function assertDescriptor(descriptor) {
-  const required = ["id", "description", "phase", "ciPolicy", "matchStrategy", "validate"];
+function assertDescriptor(descriptor) {
+  const required = ["id", "description", "phase", "ciPolicy", "matchStrategy", "migrationMarkers", "validate"];
   for (const field of required) {
     if (!(field in descriptor)) {
       throw new Error(`Patch descriptor is missing ${field}`);
@@ -18,14 +18,17 @@ export function assertDescriptor(descriptor) {
   return descriptor;
 }
 
-if (process.argv.includes("--typecheck")) {
+if (require.main === module && process.argv.includes("--typecheck")) {
   assertDescriptor({
     id: "phase0-contract",
     description: "Phase 0 descriptor contract",
     phase: "main-bundle",
     ciPolicy: CRITICAL_POLICY,
     matchStrategy: "structural",
+    migrationMarkers: ["factory-linux:phase0-contract"],
     validate: () => true,
   });
   process.stdout.write("Patch descriptor contract check passed.\n");
 }
+
+module.exports = { CRITICAL_POLICY, OPTIONAL_POLICY, assertDescriptor };

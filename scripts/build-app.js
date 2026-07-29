@@ -5,6 +5,7 @@ const path = require("node:path");
 const { acquireDmg } = require("./dmg");
 const { extractDmg } = require("./extract-dmg");
 const { assembleRuntime } = require("./runtime");
+const { patchAsar } = require("../patcher/src/engine");
 
 async function buildApp(options = {}) {
   const root = path.resolve(options.root || path.join(__dirname, ".."));
@@ -23,9 +24,13 @@ async function buildApp(options = {}) {
     expectedSha256: dmg.sha256,
     expectedVersion: options.version || dmg.version || undefined,
   });
-  // Phase 2 injects its output through this explicit hook. Phase 1 copies the
-  // upstream ASAR unchanged and records the exact input/output identity.
-  const patchedAsarPath = options.patchedAsarPath || extracted.appAsarPath;
+  const patchReportPath = path.join(candidate, "patch-report.json");
+  let patchReport;
+  let patchedAsarPath = options.patchedAsarPath;
+  if (!patchedAsarPath) {
+    patchReport = await patchAsar({ asarPath: extracted.appAsarPath, reportPath: patchReportPath });
+    patchedAsarPath = extracted.appAsarPath;
+  }
   const runtime = await assembleRuntime({
     extracted,
     patchedAsarPath,
@@ -33,16 +38,22 @@ async function buildApp(options = {}) {
     cacheDir: path.join(root, ".cache", "electron"),
   });
   const buildInfo = {
-    phase: 1,
+    phase: 2,
     source: dmg.source,
-    dmgPath: dmg.path,
+    dmgFile: path.basename(dmg.path),
     dmgSha256: dmg.sha256,
     factoryVersion: extracted.version,
     electronVersion: extracted.electronVersion,
     sourceAsarSha256: extracted.appAsarSha256,
     runtimeAsarSha256: runtime.appAsarSha256,
-    patchHook: options.patchedAsarPath ? "external" : "phase1-identity",
+    patchHook: options.patchedAsarPath ? "external" : "phase2-engine",
+    patchReportPath: options.patchedAsarPath ? null : ".factory-linux/patch-report.json",
   };
+  const metadataDir = path.join(runtime.outputDir, ".factory-linux");
+  fs.mkdirSync(metadataDir, { recursive: true });
+  if (patchReport) {
+    fs.copyFileSync(patchReportPath, path.join(metadataDir, "patch-report.json"));
+  }
   fs.writeFileSync(path.join(runtime.outputDir, "build-info.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
   return { dmg, extracted, runtime, buildInfo, appDir: runtime.outputDir };
 }

@@ -6,6 +6,17 @@ const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const { sha256 } = require("./runtime");
 
+const REQUIRED_PATCHES = [
+  "daemon-transport-force-websocket",
+  "prevent-listen-ipc",
+  "system-daemon-adoption",
+  "system-droid-cli-resolver",
+  "linux-native-updater-button",
+  "auto-updater-guard",
+  "disable-keyring",
+  "protocol-handler",
+];
+
 function copyRecursive(source, destination) {
   fs.cpSync(source, destination, { recursive: true, dereference: false, preserveTimestamps: true });
 }
@@ -26,6 +37,35 @@ function assertNoWorkspaceSymlinks(root) {
   walk(root);
 }
 
+function assertNoBundledDroid(appDir) {
+  const droidPath = path.join(appDir, "resources", "bin", "droid");
+  if (fs.existsSync(droidPath)) {
+    throw new Error(`Staged app must not contain resources/bin/droid: ${droidPath}`);
+  }
+}
+
+function assertAcceptedPatchReport(appDir) {
+  const reportPath = path.join(appDir, ".factory-linux", "patch-report.json");
+  if (!fs.existsSync(reportPath)) throw new Error(`Staged app is missing required patch report: ${reportPath}`);
+  let report;
+  try {
+    report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Patch report is invalid JSON: ${error.message}`);
+  }
+  for (const id of REQUIRED_PATCHES) {
+    const outcome = report.outcomes?.find((candidate) => candidate.id === id);
+    if (!outcome || !outcome.validationPassed || !(outcome.matched || outcome.alreadyPatched)) {
+      throw new Error(`Required patch was not accepted: ${id}`);
+    }
+  }
+  const asarHash = sha256(path.join(appDir, "resources", "app.asar"));
+  if (!report.finalHash || report.finalHash !== asarHash) {
+    throw new Error(`Patch report hash does not match staged app.asar: expected ${report.finalHash || "missing"}, got ${asarHash}`);
+  }
+  return report;
+}
+
 function buildDeb(options) {
   const appDir = path.resolve(options.appDir);
   const version = options.version;
@@ -33,6 +73,8 @@ function buildDeb(options) {
   if (!fs.existsSync(path.join(appDir, "resources", "app.asar"))) throw new Error("Staged app is missing resources/app.asar");
   if (!fs.existsSync(path.join(appDir, "factory-desktop"))) throw new Error("Staged app is missing factory-desktop launcher");
   assertNoWorkspaceSymlinks(appDir);
+  assertNoBundledDroid(appDir);
+  assertAcceptedPatchReport(appDir);
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deb-"));
   const root = path.join(temp, "root");
@@ -41,10 +83,17 @@ function buildDeb(options) {
   fs.mkdirSync(path.join(root, "opt", "Factory"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "applications"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps"), { recursive: true });
+  fs.mkdirSync(path.join(root, "usr", "lib", "factory-desktop"), { recursive: true });
+  fs.mkdirSync(path.join(root, "usr", "lib", "systemd", "user"), { recursive: true });
   copyRecursive(appDir, path.join(root, "opt", "Factory"));
 
   const desktop = path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.desktop");
   fs.copyFileSync(desktop, path.join(root, "usr", "share", "applications", "factory-desktop.desktop"));
+  const daemonScript = path.resolve(__dirname, "..", "packaging", "linux", "factory-droid-daemon.sh");
+  const daemonService = path.resolve(__dirname, "..", "packaging", "linux", "factory-droid-daemon.service");
+  fs.copyFileSync(daemonScript, path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"));
+  fs.chmodSync(path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"), 0o755);
+  fs.copyFileSync(daemonService, path.join(root, "usr", "lib", "systemd", "user", "factory-droid-daemon.service"));
   if (options.iconPath && fs.existsSync(options.iconPath)) fs.copyFileSync(options.iconPath, path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"));
   for (const script of ["factory-desktop.postinst", "factory-desktop.prerm", "factory-desktop.postrm"]) {
     fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", script), path.join(control, script));
@@ -81,4 +130,4 @@ if (require.main === module) {
   catch (error) { console.error(`Deb build failed: ${error.message}`); process.exit(1); }
 }
 
-module.exports = { buildDeb, assertNoWorkspaceSymlinks };
+module.exports = { buildDeb, assertNoWorkspaceSymlinks, assertNoBundledDroid, assertAcceptedPatchReport };

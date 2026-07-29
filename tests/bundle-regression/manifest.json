@@ -1,0 +1,30 @@
+{
+  "fixtures": [
+    {
+      "version": "0.137.0",
+      "transport_shape": "statsig-DesktopDaemonIpc",
+      "source": "local-only",
+      "paths": [
+        "/home/fiks/Applications/Factory-patched-0.137.0-backup/resources/app.asar"
+      ],
+      "negative_fixture": true
+    },
+    {
+      "version": "0.138.0",
+      "transport_shape": "hardcoded-ipc-return",
+      "source": "local-only",
+      "paths": [
+        "/home/fiks/Applications/Factory-patched/resources/app.asar.orig-0.138.0"
+      ],
+      "negative_fixture": true
+    },
+    {
+      "version": "0.139.0",
+      "transport_shape": "hardcoded-ipc-return",
+      "source": "raw-dmg-cache",
+      "paths": [
+        "/home/fiks/.cache/factory-update-manager/downloads/Factory-0.139.0-x64.dmg"
+      ]
+    }
+  ]
+}

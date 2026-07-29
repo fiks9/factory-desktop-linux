@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FACTORY_DISABLE_KEYRING=1
+
+# AppImage does not assume a native-package updater helper is installed.
+if [[ ! -x "${FACTORY_UPDATE_MANAGER_PATH:-/usr/bin/factory-update-manager}" ]]; then
+  export FACTORY_UPDATE_MANAGER_UNAVAILABLE=1
+fi
+
+exec "$APPDIR/usr/lib/factory-desktop/factory-desktop" "$@"

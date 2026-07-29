@@ -15,6 +15,7 @@ const {
 } = require("../scripts/dmg");
 const { plistValue, validateDmgFile } = require("../scripts/extract-dmg");
 const { execFileSync } = require("node:child_process");
+const { assertNoBundledDroid, assertAcceptedPatchReport } = require("../scripts/package-deb");
 
 let server;
 let baseUrl;
@@ -105,4 +106,19 @@ test("DMG acceptance recognizes a synthetic Factory-shaped archive", () => {
   const accepted = validateDmgFile(dmg);
   assert.equal(accepted.appAsarEntry, "Factory/Factory.app/Contents/Resources/app.asar");
   assert.equal(accepted.infoEntry, "Factory/Factory.app/Contents/Info.plist");
+});
+
+test("package validation rejects an accidentally bundled droid", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-phase2-droid-"));
+  fs.mkdirSync(path.join(root, "resources", "bin"), { recursive: true });
+  fs.writeFileSync(path.join(root, "resources", "bin", "droid"), "binary placeholder");
+  assert.throws(() => assertNoBundledDroid(root), /must not contain resources\/bin\/droid/);
+});
+
+test("package validation fails closed without an accepted patch report", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-phase2-report-"));
+  assert.throws(() => assertAcceptedPatchReport(root), /missing required patch report/);
+  fs.mkdirSync(path.join(root, ".factory-linux"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".factory-linux", "patch-report.json"), JSON.stringify({ outcomes: [] }));
+  assert.throws(() => assertAcceptedPatchReport(root), /Required patch was not accepted/);
 });

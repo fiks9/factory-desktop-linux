@@ -1,0 +1,85 @@
+"use strict";
+
+function contextHas(content, marker) {
+  return content.includes(marker);
+}
+
+function validateTransport(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:daemon-transport-force-websocket */";
+  const hasWebSocket = /\.[Ww]ebSocket\b/.test(all);
+  const hardcodedIpc = /function\s+[\w$]+\(\)\{return\s+[\w$]+\.Ipc\}/.test(all);
+  const statsigIpc = /DesktopDaemonIpc[\s\S]{0,3000}\?[\w$]+\.Ipc:[\w$]+\.WebSocket/.test(all);
+  const hasResolverUse = /resolveTransportMode\(\)/.test(all) && /transportMode/.test(all);
+  const validationPassed = contextHas(all, marker) && hasWebSocket && !hardcodedIpc && !statsigIpc && hasResolverUse;
+  return {
+    validationPassed,
+    evidence: { hasWebSocket, hardcodedIpc, statsigIpc, hasResolverUse, marker: contextHas(all, marker) },
+    errors: validationPassed ? [] : ["Transport validator could not prove Linux resolver returns WebSocket."],
+  };
+}
+
+function validateListenIpc(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:prevent-listen-ipc */";
+  const push = /push\("--listen","ipc"\)/.test(all);
+  const guarded = /process\.platform!==["']linux["'][^;]{0,100}push\("--listen","ipc"\)/.test(all);
+  const validationPassed = contextHas(all, marker) && (!push || guarded);
+  return { validationPassed, evidence: { marker: contextHas(all, marker), push, guarded }, errors: validationPassed ? [] : ["An unguarded --listen ipc path remains on Linux."] };
+}
+
+function validateAdoption(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:system-daemon-adoption */";
+  const waitMs = all.match(/FACTORY_DAEMON_ADOPTION_TIMEOUT_MS[^0-9]*(\d+)/)?.[1];
+  const linuxBranch = all.includes("process.platform!==\"linux\"") || all.includes("process.platform !== \"linux\"");
+  const validationPassed = contextHas(all, marker) && all.includes("http://127.0.0.1:37643/health") && all.includes("factory-droid-daemon.service") && Number(waitMs) >= 15000 && all.includes("fetch(") && linuxBranch;
+  return { validationPassed, evidence: { marker: contextHas(all, marker), healthUrl: all.includes("http://127.0.0.1:37643/health"), systemctl: all.includes("factory-droid-daemon.service"), timeoutMs: Number(waitMs || 0) }, errors: validationPassed ? [] : ["System daemon adoption validator requires health, systemctl fallback, and a >=15s wait."] };
+}
+
+function validateSystemDroid(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:system-droid-cli-resolver */";
+  const homePath = all.includes('path.join(os.homedir(),".local","bin","droid")');
+  const systemPaths = all.includes("/usr/local/bin/droid") && all.includes("/usr/bin/droid");
+  const validationPassed = contextHas(all, marker) && all.includes("FACTORY_DROID_PATH") && all.includes("command -v droid") && homePath && systemPaths && all.includes("Droid CLI not found") && all.includes("[factory-linux] droid CLI");
+  return { validationPassed, evidence: { marker: contextHas(all, marker), env: all.includes("FACTORY_DROID_PATH"), commandV: all.includes("command -v droid"), homePath, systemPaths, logging: all.includes("[factory-linux] droid CLI") }, errors: validationPassed ? [] : ["System droid resolver validator did not find all required lookup paths."] };
+}
+
+function validateAutoUpdater(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:auto-updater-guard */";
+  const calls = [...all.matchAll(/[\w$]+\.autoUpdater\.(?:checkForUpdates|quitAndInstall)\(\)/g)];
+  const unguarded = calls.filter((call) => !all.slice(Math.max(0, call.index - 500), call.index).includes('process.platform!=="linux"'));
+  const remaining = unguarded.length > 0;
+  const validationPassed = contextHas(all, marker) && !remaining;
+  return { validationPassed, evidence: { marker: contextHas(all, marker), remaining }, errors: validationPassed ? [] : ["Built-in autoUpdater calls remain unguarded or unpatched."] };
+}
+
+function validateNativeUpdater(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const marker = "/* factory-linux:linux-native-updater-button */";
+  const noThrowFallback = all.includes("fs.existsSync(helper)") && all.includes("catch(e)") && all.includes("return false");
+  const validationPassed = contextHas(all, marker) && all.includes("FACTORY_UPDATE_MANAGER_PATH") && all.includes("update-manager-unavailable") && noThrowFallback;
+  return { validationPassed, evidence: { marker: contextHas(all, marker), override: all.includes("FACTORY_UPDATE_MANAGER_PATH"), unavailable: all.includes("update-manager-unavailable"), noThrowFallback }, errors: validationPassed ? [] : ["Linux native updater bridge was not validated."] };
+}
+
+function validatePackaging(root) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const requiredFiles = ["launcher/start.sh.template", "packaging/linux/factory-desktop.desktop", "packaging/appimage/AppRun.template"];
+  const loaded = Object.fromEntries(requiredFiles.map((file) => {
+    const fullPath = path.join(root, file);
+    return [file, fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf8") : ""];
+  }));
+  const missingFiles = requiredFiles.filter((file) => loaded[file] === "");
+  const keyring = missingFiles.length === 0 && requiredFiles.every((file) => loaded[file].includes("FACTORY_DISABLE_KEYRING") && /(?:1|:-1)/.test(loaded[file]));
+  const desktop = loaded["packaging/linux/factory-desktop.desktop"];
+  const protocol = desktop.includes("MimeType=x-scheme-handler/factory-desktop;") && desktop.includes("StartupWMClass=Factory");
+  return {
+    keyring: { validationPassed: keyring, evidence: { keyring, missingFiles }, errors: keyring ? [] : ["Launcher, desktop entry, and AppRun must force FACTORY_DISABLE_KEYRING=1."] },
+    protocol: { validationPassed: protocol, evidence: { protocol }, errors: protocol ? [] : ["Desktop integration is missing the factory-desktop protocol or StartupWMClass."] },
+  };
+}
+
+module.exports = { validateTransport, validateListenIpc, validateAdoption, validateSystemDroid, validateAutoUpdater, validateNativeUpdater, validatePackaging };

@@ -9,10 +9,10 @@ Generated and proprietary-derived payloads are deliberately gitignored.
 
 ## Status
 
-Phase 1 is complete: deterministic DMG acquisition, pinned-DMG mode, content-
-addressed caching, DMG acceptance/extraction, Linux Electron runtime staging,
-and a base `.deb` builder are in place. ASAR patching and the updater remain
-fail-closed placeholders for Phases 2 and 4.
+Phase 2 is complete: deterministic DMG acquisition, Linux runtime staging, base
+`.deb` packaging, fail-closed ASAR patch engine, required Linux patches, patch
+reports, idempotence, and regression tests are in place. The updater remains a
+fail-closed placeholder for Phase 4.
 
 ## Design Rules
 
@@ -45,8 +45,8 @@ For a deterministic local build use `make build-app DMG=/absolute/path/Factory.d
 The `.deb` command requires `APP_DIR` and `VERSION`, for example
 `make deb APP_DIR=work/candidate-123/app VERSION=0.139.0`.
 
-The build commands for ASAR patching and the updater remain intentionally
-fail-closed until their respective phases are implemented.
+`make build-app` now runs the Phase 2 patch engine before staging the Linux
+runtime. The updater commands remain intentionally fail-closed until Phase 4.
 
 ## Legal Notice
 

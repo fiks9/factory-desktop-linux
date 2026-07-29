@@ -1,6 +1,6 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { assertDescriptor, CRITICAL_POLICY } from "../src/contract.js";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { assertDescriptor, CRITICAL_POLICY } = require("../src/contract.js");
 
 test("required patch descriptors have an explicit fail-closed policy", () => {
   const descriptor = assertDescriptor({
