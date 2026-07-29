@@ -1,0 +1,12 @@
+[package]
+name = "factory-update-manager"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Phase 0 contract for the Factory Desktop Linux update manager"
+
+[[bin]]
+name = "factory-update-manager"
+path = "src/main.rs"
+
+[dependencies]

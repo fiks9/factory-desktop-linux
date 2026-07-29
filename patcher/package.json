@@ -1,0 +1,12 @@
+{
+  "name": "factory-desktop-linux-patcher",
+  "private": true,
+  "version": "0.0.0-phase0",
+  "description": "Fail-closed ASAR patch contracts for Factory Desktop Linux",
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/contract.js",
+    "test": "node --test tests/contract.test.js",
+    "typecheck": "node src/contract.js --typecheck"
+  }
+}

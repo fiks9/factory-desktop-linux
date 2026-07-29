@@ -1,0 +1,37 @@
+# Generated/proprietary-derived payloads. Never commit these files.
+*.dmg
+*.asar
+*.deb
+*.rpm
+*.AppImage
+*.pkg.tar.zst
+
+/build/
+/dist/
+/out/
+target/
+/node_modules/
+/patcher/dist/
+/patcher/node_modules/
+/tests/bundle-regression/cache/
+/tests/bundle-regression/fixtures/
+
+/.factory-app/
+/.factory-candidate-*/
+/.factory-linux/
+
+# Local runtime state and reports.
+.cache/
+.tmp/
+coverage/
+*.log
+
+# Local environment/configuration.
+.env
+.env.*
+!.env.example
+
+# Editors and OS metadata.
+.DS_Store
+.idea/
+.vscode/
