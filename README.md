@@ -9,10 +9,11 @@ Generated and proprietary-derived payloads are deliberately gitignored.
 
 ## Status
 
-Phase 2 is complete: deterministic DMG acquisition, Linux runtime staging, base
-`.deb` packaging, fail-closed ASAR patch engine, required Linux patches, patch
-reports, idempotence, and regression tests are in place. The updater remains a
-fail-closed placeholder for Phase 4.
+Phase 4 is in progress: deterministic DMG acquisition, Linux runtime staging,
+fail-closed ASAR patching, package hygiene, `.deb`/`.rpm`/AppImage packaging,
+and a native Rust update-manager MVP are in place. Native packages include the
+updater and an isolated Node update-builder; AppImage remains portable and
+reports the native updater as unavailable.
 
 ## Design Rules
 
@@ -27,8 +28,8 @@ fail-closed placeholder for Phase 4.
 
 ## Planned Formats
 
-The MVP targets Debian packages. RPM and AppImage packaging follow after the
-deterministic build, patch, and package-hygiene gates are established.
+The native updater targets `.deb` and `.rpm` installations. AppImage builds are
+portable and deliberately do not implement privileged native self-update.
 
 ## Planned Commands
 
@@ -45,8 +46,9 @@ For a deterministic local build use `make build-app DMG=/absolute/path/Factory.d
 The `.deb` command requires `APP_DIR` and `VERSION`, for example
 `make deb APP_DIR=work/candidate-123/app VERSION=0.139.0`.
 
-`make build-app` now runs the Phase 2 patch engine before staging the Linux
-runtime. The updater commands remain intentionally fail-closed until Phase 4.
+`make build-app` runs the patch engine before staging the Linux runtime.
+`make updater` builds the Rust helper used by native packages. See
+`docs/update-manager.md` for the MVP update flow and privilege model.
 
 ## Legal Notice
 

@@ -58,7 +58,15 @@ function scanPackageTree(root, options = {}) {
       if (rel.includes(`${path.sep}node_modules${path.sep}.bin${path.sep}`) || rel.startsWith(`node_modules${path.sep}.bin${path.sep}`)) checkExecutable(full, "node_modules/.bin file");
       if (/7zip-bin[\\/].*[\\/](?:7za|7zz)$/.test(rel)) checkExecutable(full, "7zip binary");
       if (isElf(full) && !/\.(?:so(?:\.\d+)*)$/.test(entry.name)) checkExecutable(full, "native ELF binary");
-      for (const value of forbiddenContents) if (fileContains(full, value)) errors.push(`File contains forbidden build path: ${rel}: ${value}`);
+      // Only repository and installed-builder copies of the scanner may name
+      // the forbidden CI path as part of this rule.
+      const scannerPaths = [
+        path.join("scripts", "package-hygiene.js"),
+        path.join("usr", "lib", "factory-desktop", "update-builder", "scripts", "package-hygiene.js"),
+      ];
+      if (!scannerPaths.includes(rel)) {
+        for (const value of forbiddenContents) if (fileContains(full, value)) errors.push(`File contains forbidden build path: ${rel}: ${value}`);
+      }
     }
   };
   walk(root);
@@ -79,4 +87,14 @@ function stageUpdateBuilder(sourceRoot, destination) {
   return scanPackageTree(destination, { workspaceRoot: sourceRoot });
 }
 
-module.exports = { scanPackageTree, stageUpdateBuilder };
+function stageInstalledUpdateBuilder(sourceRoot, destination) {
+  sourceRoot = path.resolve(sourceRoot); destination = path.resolve(destination);
+  for (const entry of ["assets", "launcher", "packaging", "scripts", "patcher"]) if (!fs.existsSync(path.join(sourceRoot, entry))) throw new Error(`Installed update-builder source is missing ${entry}`);
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.mkdirSync(destination, { recursive: true, mode: 0o755 });
+  for (const entry of ["assets", "launcher", "packaging", "scripts"]) fs.cpSync(path.join(sourceRoot, entry), path.join(destination, entry), { recursive: true, dereference: false });
+  stageUpdateBuilder(path.join(sourceRoot, "patcher"), path.join(destination, "patcher"));
+  return scanPackageTree(destination, { workspaceRoot: sourceRoot });
+}
+
+module.exports = { scanPackageTree, stageUpdateBuilder, stageInstalledUpdateBuilder };

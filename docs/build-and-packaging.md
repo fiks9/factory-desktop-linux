@@ -87,9 +87,11 @@ staging copies only source manifests plus `src`/`dist`, runs
 `npm ci --omit=dev`, and scans the resulting isolated tree.
 
 Native `.deb` and `.rpm` packages include the Droid user service and secure
-polkit policy. Portable AppImage omits native services, policy, and updater
-binary; its AppRun exports an unavailable updater path and supports the
-optional `--install-desktop-integration` command.
+polkit policy, the Rust update-manager binary, a user recovery service, and an
+isolated update-builder tree under `/usr/lib/factory-desktop/update-builder`.
+Portable AppImage omits native services, policy, and updater binary; its AppRun
+exports an unavailable updater path and supports the optional
+`--install-desktop-integration` command.
 
 Real DMG smoke builds are local-only in Phase 1. Proprietary DMGs and extracted
 payloads must remain outside git and outside public CI artifacts.

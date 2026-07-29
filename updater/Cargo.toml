@@ -1,12 +1,29 @@
 [package]
 name = "factory-update-manager"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Phase 0 contract for the Factory Desktop Linux update manager"
+description = "Fail-closed native update manager for Factory Desktop on Linux"
 
 [[bin]]
 name = "factory-update-manager"
 path = "src/main.rs"
 
+[lib]
+name = "factory_update_manager"
+path = "src/lib.rs"
+
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+fs4 = "0.13"
+futures-util = "0.3"
+libc = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "fs", "io-util"] }
+
+[dev-dependencies]
+tempfile = "3"

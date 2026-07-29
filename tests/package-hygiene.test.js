@@ -5,7 +5,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { scanPackageTree, stageUpdateBuilder } = require("../scripts/package-hygiene");
+const { scanPackageTree, stageUpdateBuilder, stageInstalledUpdateBuilder } = require("../scripts/package-hygiene");
+const {
+  assertAllowedNativePayload,
+  assertExactDebMaintainerScripts,
+  assertNativePackageMetadata,
+  assertRpmScriptlets,
+} = require("../scripts/inspect-package");
 
 test("hygiene gate rejects absolute CI .bin symlinks", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-broken-link-"));
@@ -32,6 +38,20 @@ test("hygiene gate accepts valid relative executable .bin links", () => {
   assert.equal(scanPackageTree(root).valid, true);
 });
 
+test("hygiene gate permits only the canonical installed copy of its own rule text", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-nested-scanner-"));
+  try {
+    const scanner = path.join(root, "usr", "lib", "factory-desktop", "update-builder", "scripts", "package-hygiene.js");
+    fs.mkdirSync(path.dirname(scanner), { recursive: true });
+    fs.copyFileSync(path.resolve(__dirname, "..", "scripts", "package-hygiene.js"), scanner);
+    assert.doesNotThrow(() => scanPackageTree(root));
+    const disguised = path.join(root, "opt", "Factory", "package-hygiene.js");
+    fs.mkdirSync(path.dirname(disguised), { recursive: true });
+    fs.copyFileSync(scanner, disguised);
+    assert.throws(() => scanPackageTree(root), /forbidden build path/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("update-builder is installed cleanly instead of copying workspace node_modules", () => {
   const destination = fs.mkdtempSync(path.join(os.tmpdir(), "factory-update-builder-"));
   try {
@@ -39,4 +59,85 @@ test("update-builder is installed cleanly instead of copying workspace node_modu
     assert.equal(result.valid, true);
     assert.equal(fs.existsSync(path.join(destination, "builder", "node_modules", "@electron", "asar")), true);
   } finally { fs.rmSync(destination, { recursive: true, force: true }); }
+});
+
+test("installed update-builder carries scripts and a clean patcher dependency tree", () => {
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), "factory-installed-builder-"));
+  try {
+    const builder = path.join(destination, "update-builder");
+    const result = stageInstalledUpdateBuilder(path.resolve(__dirname, ".."), builder);
+    assert.equal(result.valid, true);
+    assert.equal(fs.existsSync(path.join(builder, "scripts", "build-app.js")), true);
+    assert.equal(fs.existsSync(path.join(builder, "scripts", "inspect-package.js")), true);
+    assert.equal(fs.existsSync(path.join(builder, "patcher", "node_modules", "@electron", "asar")), true);
+  } finally { fs.rmSync(destination, { recursive: true, force: true }); }
+});
+
+test("native package metadata is bound to Factory Desktop build identity", () => {
+  assert.doesNotThrow(() => assertNativePackageMetadata("deb", {
+    name: "factory-desktop", version: "0.139.0", architecture: "amd64",
+  }, "0.139.0"));
+  assert.throws(() => assertNativePackageMetadata("deb", {
+    name: "factory-desktop-rootkit", version: "0.139.0", architecture: "amd64",
+  }, "0.139.0"), /package name/);
+  assert.throws(() => assertNativePackageMetadata("rpm", {
+    name: "factory-desktop", version: "0.140.0", architecture: "x86_64",
+  }, "0.139.0"), /package version/);
+});
+
+test("native payload rejects files outside canonical installation roots", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-native-payload-"));
+  try {
+    fs.mkdirSync(path.join(root, "opt", "Factory"), { recursive: true });
+    fs.writeFileSync(path.join(root, "opt", "Factory", "factory-desktop"), "fixture");
+    assert.doesNotThrow(() => assertAllowedNativePayload(root, "deb"));
+    fs.mkdirSync(path.join(root, "etc", "sudoers.d"), { recursive: true });
+    fs.writeFileSync(path.join(root, "etc", "sudoers.d", "factory"), "ALL ALL=(ALL) NOPASSWD:ALL");
+    assert.throws(() => assertAllowedNativePayload(root, "deb"), /unexpected package payload path/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("deb maintainer scripts must exactly match repository-owned scripts", () => {
+  const control = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deb-control-"));
+  try {
+    fs.writeFileSync(path.join(control, "control"), "Package: factory-desktop\n");
+    for (const name of ["postinst", "prerm", "postrm"]) {
+      fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", `factory-desktop.${name}`), path.join(control, name));
+    }
+    assert.doesNotThrow(() => assertExactDebMaintainerScripts(control));
+    fs.writeFileSync(path.join(control, "preinst"), "#!/bin/sh\ntouch /root/owned\n");
+    assert.throws(() => assertExactDebMaintainerScripts(control), /unexpected deb control member/);
+  } finally { fs.rmSync(control, { recursive: true, force: true }); }
+});
+
+test("rpm scriptlets reject any command outside the canonical post-install body", () => {
+  const { RPM_PRE_UNINSTALL } = require("../scripts/package-contract");
+  const valid = {
+    postinProgram: "/bin/sh",
+    postin: require("../scripts/package-rpm").RPM_POST_INSTALL,
+    preinProgram: "(none)", prein: "(none)",
+    preunProgram: "/bin/sh", preun: RPM_PRE_UNINSTALL,
+    postunProgram: "(none)", postun: "(none)",
+  };
+  assert.doesNotThrow(() => assertRpmScriptlets(valid));
+  assert.throws(() => assertRpmScriptlets({ ...valid, preinProgram: "/bin/sh", prein: "touch /root/owned" }), /unexpected RPM scriptlet/);
+});
+
+test("rpm versions cannot silently drop prerelease identity", () => {
+  const { rpmVersion } = require("../scripts/package-rpm");
+  assert.equal(rpmVersion("0.139.0"), "0.139.0");
+  assert.throws(() => rpmVersion("0.140.0-beta.1"), /prerelease/);
+});
+
+test("native package lifecycle wires only the recovery service", () => {
+  const postinst = fs.readFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.postinst"), "utf8");
+  const prerm = fs.readFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.prerm"), "utf8");
+  const { RPM_POST_INSTALL, RPM_PRE_UNINSTALL } = require("../scripts/package-contract");
+  assert.match(postinst, /systemctl --global enable factory-update-manager\.service/);
+  assert.match(prerm, /systemctl --global disable factory-update-manager\.service/);
+  assert.match(RPM_POST_INSTALL, /systemctl --global enable factory-update-manager\.service/);
+  assert.match(RPM_PRE_UNINSTALL, /systemctl --global disable factory-update-manager\.service/);
+  for (const text of [postinst, prerm, RPM_POST_INSTALL, RPM_PRE_UNINSTALL]) {
+    assert.doesNotMatch(text, /enable --now|start factory-update-manager/);
+  }
 });

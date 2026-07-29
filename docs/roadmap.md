@@ -22,7 +22,8 @@ Blocking package hygiene gate, AppImage, and clean update-builder staging.
 ## Phase 4
 
 Rust updater MVP: check, status, rebuild, install, rollback, state machine,
-workspaces, content-addressed downloads, and known-good retention.
+workspaces, content-addressed downloads, and known-good retention. Native
+packages carry the updater; AppImage stays updater-unavailable.
 
 ## Phase 5
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Factory Desktop update-manager recovery
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/factory-update-manager service
+
+[Install]
+WantedBy=default.target

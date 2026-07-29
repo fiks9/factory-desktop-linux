@@ -1,0 +1,138 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum State {
+    Idle,
+    Checking,
+    Downloading,
+    Building,
+    Validating,
+    ReadyPendingExit,
+    Installing,
+    Installed,
+    InstallFailedManualAction,
+    RolledBack,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateRecord {
+    pub schema_version: u32,
+    pub state: State,
+    pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_manifest: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub manual_action_required: bool,
+}
+
+impl Default for StateRecord {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            state: State::Idle,
+            updated_at: Utc::now(),
+            candidate_id: None,
+            version: None,
+            package_path: None,
+            package_sha256: None,
+            candidate_manifest: None,
+            message: None,
+            manual_action_required: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StateStore {
+    path: PathBuf,
+}
+
+impl StateStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Result<StateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if !self.path.exists() {
+            return Ok(StateRecord::default());
+        }
+        let bytes = fs::read(&self.path)?;
+        let record: StateRecord = serde_json::from_slice(&bytes)?;
+        if record.schema_version != 1 {
+            return Err(format!(
+                "unsupported state schema version: {}",
+                record.schema_version
+            )
+            .into());
+        }
+        Ok(record)
+    }
+
+    pub fn save(&self, record: &StateRecord) -> io::Result<()> {
+        let parent = self.path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state path has no parent directory",
+            )
+        })?;
+        fs::create_dir_all(parent)?;
+        let partial = parent.join(format!(
+            ".state-{}-{}.partial",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&partial)?;
+        let result = (|| {
+            serde_json::to_writer_pretty(&mut output, record).map_err(io::Error::other)?;
+            output.write_all(b"\n")?;
+            output.sync_all()?;
+            fs::rename(&partial, &self.path)?;
+            sync_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        result
+    }
+}
+
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
+    match File::open(path).and_then(|directory| directory.sync_all()) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EINVAL) | Some(libc::EISDIR)
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}

@@ -16,4 +16,11 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/factory-update-manager</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">install-validated-package</annotate>
   </action>
+  <action id="org.factory.desktop.update-manager.install-rpm">
+    <description>Install a validated Factory Desktop RPM update</description>
+    <message>Authentication is required to install a Factory Desktop RPM update.</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/factory-update-manager</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install-rpm</annotate>
+  </action>
 </policyconfig>

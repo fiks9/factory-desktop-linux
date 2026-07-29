@@ -35,7 +35,7 @@ async function buildApp(options = {}) {
     extracted,
     patchedAsarPath,
     outputDir: path.join(candidate, "app"),
-    cacheDir: path.join(root, ".cache", "electron"),
+    cacheDir: options.electronCacheDir || path.join(root, ".cache", "electron"),
   });
   const buildInfo = {
     phase: 2,
@@ -64,7 +64,7 @@ async function buildApp(options = {}) {
 if (require.main === module) {
   const args = process.argv.slice(2);
   const get = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-  buildApp({ dmg: get("--dmg"), version: get("--version") }).then((result) => console.log(JSON.stringify(result, null, 2))).catch((error) => { console.error(`Build failed: ${error.message}`); process.exit(1); });
+  buildApp({ dmg: get("--dmg"), version: get("--version"), root: get("--root"), workDir: get("--work-dir"), cacheDir: get("--cache-dir"), electronCacheDir: get("--electron-cache-dir") }).then((result) => console.log(JSON.stringify(result, null, 2))).catch((error) => { console.error(`Build failed: ${error.message}`); process.exit(1); });
 }
 
 module.exports = { buildApp };

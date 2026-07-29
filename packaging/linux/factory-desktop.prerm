@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+systemctl --global disable factory-update-manager.service >/dev/null 2>&1 || true
+systemctl --global daemon-reload >/dev/null 2>&1 || true
+
 exit 0

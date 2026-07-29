@@ -5,7 +5,7 @@ const path = require("node:path");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout, sha256 } = require("./runtime");
-const { scanPackageTree } = require("./package-hygiene");
+const { scanPackageTree, stageInstalledUpdateBuilder } = require("./package-hygiene");
 
 const REQUIRED_PATCHES = [
   "daemon-transport-force-websocket",
@@ -21,6 +21,14 @@ const REQUIRED_PATCHES = [
 
 function copyRecursive(source, destination) {
   fs.cpSync(source, destination, { recursive: true, dereference: false, preserveTimestamps: true });
+}
+
+function resolveUpdaterBinary(options = {}) {
+  const candidate = options.updaterBinary || process.env.FACTORY_UPDATE_MANAGER_BINARY || path.resolve(__dirname, "..", "updater", "target", "release", "factory-update-manager");
+  if (!path.isAbsolute(candidate)) throw new Error("Updater binary path must be absolute");
+  const stat = fs.statSync(candidate, { throwIfNoEntry: false });
+  if (!stat?.isFile() || !(stat.mode & 0o111)) throw new Error(`Native package requires an executable factory-update-manager: ${candidate}`);
+  return candidate;
 }
 
 function assertNoWorkspaceSymlinks(root) {
@@ -88,6 +96,8 @@ function buildDeb(options) {
   fs.mkdirSync(path.join(root, "usr", "share", "applications"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "lib", "factory-desktop"), { recursive: true });
+  fs.mkdirSync(path.join(root, "usr", "lib", "factory-desktop", "update-builder"), { recursive: true });
+  fs.mkdirSync(path.join(root, "usr", "bin"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "lib", "systemd", "user"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "polkit-1", "actions"), { recursive: true });
   copyRecursive(appDir, path.join(root, "opt", "Factory"));
@@ -99,11 +109,16 @@ function buildDeb(options) {
   fs.copyFileSync(daemonScript, path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"));
   fs.chmodSync(path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"), 0o755);
   fs.copyFileSync(daemonService, path.join(root, "usr", "lib", "systemd", "user", "factory-droid-daemon.service"));
+  fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-update-manager.service"), path.join(root, "usr", "lib", "systemd", "user", "factory-update-manager.service"));
   fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "org.factory.desktop.update-manager.policy"), path.join(root, "usr", "share", "polkit-1", "actions", "org.factory.desktop.update-manager.policy"));
+  fs.copyFileSync(resolveUpdaterBinary(options), path.join(root, "usr", "bin", "factory-update-manager"));
+  fs.chmodSync(path.join(root, "usr", "bin", "factory-update-manager"), 0o755);
+  stageInstalledUpdateBuilder(path.resolve(__dirname, ".."), path.join(root, "usr", "lib", "factory-desktop", "update-builder"));
   if (options.iconPath && fs.existsSync(options.iconPath)) fs.copyFileSync(options.iconPath, path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"));
-  for (const script of ["factory-desktop.postinst", "factory-desktop.prerm", "factory-desktop.postrm"]) {
-    fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", script), path.join(control, script));
-    fs.chmodSync(path.join(control, script), 0o755);
+  for (const name of ["postinst", "prerm", "postrm"]) {
+    const source = path.resolve(__dirname, "..", "packaging", "linux", `factory-desktop.${name}`);
+    fs.copyFileSync(source, path.join(control, name));
+    fs.chmodSync(path.join(control, name), 0o755);
   }
   const controlText = [
     "Package: factory-desktop",
@@ -112,7 +127,7 @@ function buildDeb(options) {
     "Priority: optional",
     "Architecture: amd64",
     "Maintainer: Factory Desktop Linux contributors",
-    "Depends: libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils",
+    "Depends: libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, nodejs, npm, xdg-utils",
     "Description: Unofficial Factory Desktop Linux wrapper",
     " Linux compatibility wrapper built from an authorized Factory Desktop DMG.",
     "",
@@ -142,4 +157,4 @@ if (require.main === module) {
   catch (error) { console.error(`Deb build failed: ${error.message}`); process.exit(1); }
 }
 
-module.exports = { buildDeb, assertNoWorkspaceSymlinks, assertNoBundledDroid, assertAcceptedPatchReport };
+module.exports = { buildDeb, assertNoWorkspaceSymlinks, assertNoBundledDroid, assertAcceptedPatchReport, resolveUpdaterBinary };

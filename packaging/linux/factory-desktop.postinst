@@ -9,6 +9,9 @@ if [[ -f "$SANDBOX" ]]; then
 fi
 
 update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+install -d -m 0700 /var/cache/factory-update-manager/packages /var/lib/factory-update-manager/known-good
+systemctl --global daemon-reload >/dev/null 2>&1 || true
+systemctl --global enable factory-update-manager.service >/dev/null 2>&1 || true
 if command -v xdg-mime >/dev/null 2>&1 && [[ -n "${SUDO_USER:-}" ]]; then
   user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)
   if [[ -n "$user_home" ]]; then

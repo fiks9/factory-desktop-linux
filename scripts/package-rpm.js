@@ -5,8 +5,14 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertPackagedRuntimeLayout, sha256 } = require("./runtime");
-const { assertAcceptedPatchReport, assertNoBundledDroid } = require("./package-deb");
-const { scanPackageTree } = require("./package-hygiene");
+const { assertAcceptedPatchReport, assertNoBundledDroid, resolveUpdaterBinary } = require("./package-deb");
+const { scanPackageTree, stageInstalledUpdateBuilder } = require("./package-hygiene");
+const { RPM_POST_INSTALL, RPM_PRE_UNINSTALL } = require("./package-contract");
+
+function rpmVersion(version) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`RPM prerelease/build versions are unsupported: ${version}`);
+  return version;
+}
 
 function requireTool(tool) {
   try { return execFileSync("sh", ["-lc", `command -v ${tool}`], { encoding: "utf8" }).trim(); }
@@ -25,18 +31,24 @@ function buildRpm(options) {
   for (const dir of ["BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"]) fs.mkdirSync(path.join(top, dir), { recursive: true });
   fs.mkdirSync(path.join(payload, "opt", "Factory"), { recursive: true });
   fs.cpSync(appDir, path.join(payload, "opt", "Factory"), { recursive: true, dereference: false });
+  fs.mkdirSync(path.join(payload, "usr", "bin"), { recursive: true });
+  fs.copyFileSync(resolveUpdaterBinary(options), path.join(payload, "usr", "bin", "factory-update-manager"));
+  fs.chmodSync(path.join(payload, "usr", "bin", "factory-update-manager"), 0o755);
+  stageInstalledUpdateBuilder(path.resolve(__dirname, ".."), path.join(payload, "usr", "lib", "factory-desktop", "update-builder"));
   const copies = [
     ["packaging/linux/factory-desktop.desktop", "usr/share/applications/factory-desktop.desktop", 0o644],
     ["packaging/linux/factory-droid-daemon.sh", "usr/lib/factory-desktop/factory-droid-daemon", 0o755],
     ["packaging/linux/factory-droid-daemon.service", "usr/lib/systemd/user/factory-droid-daemon.service", 0o644],
+    ["packaging/linux/factory-update-manager.service", "usr/lib/systemd/user/factory-update-manager.service", 0o644],
     ["packaging/linux/org.factory.desktop.update-manager.policy", "usr/share/polkit-1/actions/org.factory.desktop.update-manager.policy", 0o644],
     ["assets/factory-desktop.svg", "usr/share/icons/hicolor/scalable/apps/factory-desktop.svg", 0o644],
   ];
   for (const [source, target, mode] of copies) { const output=path.join(payload,target);fs.mkdirSync(path.dirname(output),{recursive:true});fs.copyFileSync(path.resolve(source),output);fs.chmodSync(output,mode); }
   scanPackageTree(payload, { workspaceRoot: process.cwd() });
   execFileSync("tar", ["-C", payload, "-czf", path.join(top, "SOURCES", "factory-payload.tar.gz"), "."], { stdio: "ignore" });
-  const spec = `Name: factory-desktop\nVersion: ${version.replace(/[-+].*$/, "")}\nRelease: 1%{?dist}\nSummary: Unofficial Factory Desktop Linux wrapper\nLicense: MIT\nBuildArch: x86_64\nSource0: factory-payload.tar.gz\nRequires: gtk3, nss, libXScrnSaver, libXtst, xdg-utils\n\n%description\nLinux compatibility wrapper built from an authorized Factory Desktop DMG.\n\n%prep\n%setup -q -c -T\ntar -xzf %{SOURCE0}\n\n%build\n\n%install\nmkdir -p %{buildroot}\ncp -a . %{buildroot}/\n\n%post\nif [ -f /opt/Factory/chrome-sandbox ]; then chown root:root /opt/Factory/chrome-sandbox; chmod 4755 /opt/Factory/chrome-sandbox; fi\nupdate-desktop-database /usr/share/applications >/dev/null 2>&1 || true\n\n%files\n/opt/Factory\n/usr/share/applications/factory-desktop.desktop\n/usr/lib/factory-desktop/factory-droid-daemon\n/usr/lib/systemd/user/factory-droid-daemon.service\n/usr/share/polkit-1/actions/org.factory.desktop.update-manager.policy\n/usr/share/icons/hicolor/scalable/apps/factory-desktop.svg\n`;
-  const specPath=path.join(top,"SPECS","factory-desktop.spec");fs.writeFileSync(specPath,spec);
+  const spec = `Name: factory-desktop\nVersion: ${rpmVersion(version)}\nRelease: 1%{?dist}\nSummary: Unofficial Factory Desktop Linux wrapper\nLicense: MIT\nBuildArch: x86_64\nSource0: factory-payload.tar.gz\nRequires: gtk3, nss, libXScrnSaver, libXtst, nodejs, npm, xdg-utils\n\n%description\nLinux compatibility wrapper built from an authorized Factory Desktop DMG.\n\n%prep\n%setup -q -c -T\ntar -xzf %{SOURCE0}\n\n%build\n\n%install\nmkdir -p %{buildroot}\ncp -a . %{buildroot}/\n\n%post\n${RPM_POST_INSTALL}\n\n%preun\n${RPM_PRE_UNINSTALL}\n\n%files\n/opt/Factory\n/usr/share/applications/factory-desktop.desktop\n/usr/lib/factory-desktop/factory-droid-daemon\n/usr/lib/systemd/user/factory-droid-daemon.service\n/usr/share/polkit-1/actions/org.factory.desktop.update-manager.policy\n/usr/share/icons/hicolor/scalable/apps/factory-desktop.svg\n`;
+  const specWithUpdater = spec.replace("/opt/Factory\n", "/opt/Factory\n/usr/bin/factory-update-manager\n").replace("/usr/lib/factory-desktop/factory-droid-daemon\n", "/usr/lib/factory-desktop/factory-droid-daemon\n/usr/lib/factory-desktop/update-builder\n").replace("/usr/lib/systemd/user/factory-droid-daemon.service\n", "/usr/lib/systemd/user/factory-droid-daemon.service\n/usr/lib/systemd/user/factory-update-manager.service\n");
+  const specPath=path.join(top,"SPECS","factory-desktop.spec");fs.writeFileSync(specPath,specWithUpdater);
   execFileSync("rpmbuild", ["-bb", "--define", `_topdir ${top}`, specPath], { stdio: "inherit", timeout: 10*60*1000 });
   const built=path.join(top,"RPMS","x86_64");const rpm=fs.readdirSync(built).find((file)=>file.endsWith(".rpm"));if(!rpm)throw new Error("rpmbuild did not produce an RPM");
   const outputDir=path.resolve(options.outputDir||"dist"),output=path.join(outputDir,rpm);fs.mkdirSync(outputDir,{recursive:true});fs.copyFileSync(path.join(built,rpm),output);
@@ -46,4 +58,4 @@ function buildRpm(options) {
 }
 
 if(require.main===module){const [appDir,version,outputDir]=process.argv.slice(2);try{console.log(JSON.stringify(buildRpm({appDir,version,outputDir}),null,2))}catch(error){console.error(`RPM build failed: ${error.message}`);process.exit(1)}}
-module.exports={buildRpm};
+module.exports={buildRpm,rpmVersion,RPM_POST_INSTALL,RPM_PRE_UNINSTALL};
