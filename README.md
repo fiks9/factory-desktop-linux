@@ -9,10 +9,10 @@ Generated and proprietary-derived payloads are deliberately gitignored.
 
 ## Status
 
-Phase 0 is complete: repository contracts, legal hygiene, build entry points,
-and CI scaffolding are in place. Application assembly, ASAR patching, package
-builders, and the Rust update manager are added in later phases only after they
-have tests and fail-closed validation.
+Phase 1 is complete: deterministic DMG acquisition, pinned-DMG mode, content-
+addressed caching, DMG acceptance/extraction, Linux Electron runtime staging,
+and a base `.deb` builder are in place. ASAR patching and the updater remain
+fail-closed placeholders for Phases 2 and 4.
 
 ## Design Rules
 
@@ -40,8 +40,13 @@ make deb
 make updater
 ```
 
-The build commands are intentionally placeholders in Phase 0 and fail with a
-clear message until their phase is implemented.
+`make build-app` discovers the current version and downloads the official DMG.
+For a deterministic local build use `make build-app DMG=/absolute/path/Factory.dmg VERSION=0.139.0`.
+The `.deb` command requires `APP_DIR` and `VERSION`, for example
+`make deb APP_DIR=work/candidate-123/app VERSION=0.139.0`.
+
+The build commands for ASAR patching and the updater remain intentionally
+fail-closed until their respective phases are implemented.
 
 ## Legal Notice
 

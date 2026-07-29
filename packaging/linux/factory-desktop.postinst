@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_ROOT=/opt/Factory
+SANDBOX="$APP_ROOT/chrome-sandbox"
+if [[ -f "$SANDBOX" ]]; then
+  chown root:root "$SANDBOX"
+  chmod 4755 "$SANDBOX"
+fi
+
+update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+if command -v xdg-mime >/dev/null 2>&1 && [[ -n "${SUDO_USER:-}" ]]; then
+  user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)
+  if [[ -n "$user_home" ]]; then
+    runuser -u "$SUDO_USER" -- env HOME="$user_home" xdg-mime default factory-desktop.desktop x-scheme-handler/factory-desktop >/dev/null 2>&1 || true
+  fi
+fi

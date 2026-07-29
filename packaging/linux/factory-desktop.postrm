@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

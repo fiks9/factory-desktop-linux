@@ -10,6 +10,8 @@
 /dist/
 /out/
 target/
+/work/
+/downloads/
 /node_modules/
 /patcher/dist/
 /patcher/node_modules/
