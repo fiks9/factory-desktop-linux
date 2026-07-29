@@ -57,5 +57,25 @@ registers `factory-desktop://` where an active user session is available.
 The desktop entry includes `FACTORY_DISABLE_KEYRING=1`,
 `MimeType=x-scheme-handler/factory-desktop;`, and `StartupWMClass=Factory`.
 
+## Product Binary Name
+
+The Linux Electron ELF must be named `factory-desktop`, not `electron`.
+Electron uses the executable identity as part of its packaged-app detection;
+leaving the runtime named `electron` makes `app.isPackaged` false even inside
+`/opt/Factory`. That selects Factory's development paths, including `droid-dev`,
+daemon `--debug` arguments, and development protocol naming.
+
+Runtime staging therefore produces this layout:
+
+```text
+/opt/Factory/factory-desktop          # renamed Electron ELF
+/opt/Factory/factory-desktop-launcher # environment shim
+/opt/Factory/resources/app.asar
+```
+
+The shim executes the product-named ELF directly, so the final process keeps
+the product identity. The production desktop entry invokes the shim and
+registers only `factory-desktop://`; it does not register a `-dev` scheme.
+
 Real DMG smoke builds are local-only in Phase 1. Proprietary DMGs and extracted
 payloads must remain outside git and outside public CI artifacts.

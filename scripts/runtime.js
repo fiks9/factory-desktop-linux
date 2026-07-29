@@ -6,6 +6,9 @@ const https = require("node:https");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
+const PRODUCT_BINARY_NAME = "factory-desktop";
+const LAUNCHER_NAME = "factory-desktop-launcher";
+
 function download(url, destination) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, (response) => {
@@ -40,6 +43,39 @@ function electronZipUrl(version, arch = "x64") {
   return `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-linux-${arch}.zip`;
 }
 
+function isExecutable(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function assertPackagedRuntimeLayout(appDir, options = {}) {
+  const binaryName = options.binaryName || PRODUCT_BINARY_NAME;
+  if (binaryName === "electron") throw new Error("Packaged binary name must not be electron");
+  const binaryPath = path.join(appDir, binaryName);
+  const legacyElectronPath = path.join(appDir, "electron");
+  const asarPath = path.join(appDir, "resources", "app.asar");
+  const launcherPath = path.join(appDir, LAUNCHER_NAME);
+  if (!isExecutable(binaryPath)) throw new Error(`Packaged product binary is missing or not executable: ${binaryPath}`);
+  const magic = fs.readFileSync(binaryPath).subarray(0, 4);
+  if (!magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) throw new Error(`Packaged product binary is not an ELF executable: ${binaryPath}`);
+  if (fs.existsSync(legacyElectronPath)) throw new Error(`Staged runtime must not retain the electron binary name: ${legacyElectronPath}`);
+  if (!fs.statSync(asarPath, { throwIfNoEntry: false })?.isFile()) throw new Error(`Staged runtime is missing resources/app.asar: ${asarPath}`);
+  if (!isExecutable(launcherPath)) throw new Error(`Packaged launcher is missing or not executable: ${launcherPath}`);
+  const launcher = fs.readFileSync(launcherPath, "utf8");
+  if (!launcher.includes(`exec "$APP_ROOT/${binaryName}" "$@"`)) throw new Error(`Launcher does not exec the product-named binary: ${launcherPath}`);
+  if (launcher.includes("droid-dev") || launcher.includes("--debug")) throw new Error("Packaged launcher must not inject droid-dev or --debug");
+  const buildInfoPath = path.join(appDir, "build-info.json");
+  if (fs.existsSync(buildInfoPath)) {
+    const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
+    if (buildInfo.binaryName !== binaryName) throw new Error(`build-info binaryName mismatch: expected ${binaryName}, got ${buildInfo.binaryName}`);
+  }
+  return { binaryName, binaryPath, launcherName: LAUNCHER_NAME, asarPath };
+}
+
 async function assembleRuntime(options) {
   const { extracted, outputDir, patchedAsarPath } = options;
   if (!extracted || !extracted.electronVersion || !extracted.appAsarPath) throw new Error("Runtime assembly requires extracted Electron metadata and app.asar");
@@ -60,20 +96,27 @@ async function assembleRuntimeAsync(options) {
   fs.mkdirSync(temporary, { recursive: true, mode: 0o755 });
   const sevenZip = process.env.SEVEN_ZIP || (fs.existsSync("/usr/bin/7zz") ? "/usr/bin/7zz" : "7z");
   execFileSync(sevenZip, ["x", "-y", `-o${temporary}`, zipPath], { stdio: "ignore", timeout: 10 * 60 * 1000 });
+  const electronBinary = path.join(temporary, "electron");
+  const productBinary = path.join(temporary, PRODUCT_BINARY_NAME);
+  if (!isExecutable(electronBinary)) throw new Error(`Electron archive is missing its executable: ${electronBinary}`);
+  fs.renameSync(electronBinary, productBinary);
   fs.mkdirSync(path.join(temporary, "resources"), { recursive: true });
   fs.copyFileSync(sourceAsar, path.join(temporary, "resources", "app.asar"));
-  fs.copyFileSync(path.join(__dirname, "..", "launcher", "start.sh.template"), path.join(temporary, "factory-desktop"));
-  fs.chmodSync(path.join(temporary, "factory-desktop"), 0o755);
+  fs.copyFileSync(path.join(__dirname, "..", "launcher", "start.sh.template"), path.join(temporary, LAUNCHER_NAME));
+  fs.chmodSync(path.join(temporary, LAUNCHER_NAME), 0o755);
   fs.rmSync(path.join(temporary, "resources", "default_app.asar"), { force: true });
+  assertPackagedRuntimeLayout(temporary);
   fs.rmSync(path.join(outputDir), { recursive: true, force: true });
   fs.renameSync(temporary, outputDir);
   return {
     outputDir,
     electronVersion: extracted.electronVersion,
+    binaryName: PRODUCT_BINARY_NAME,
+    launcherName: LAUNCHER_NAME,
     appAsar: path.join(outputDir, "resources", "app.asar"),
     appAsarSha256: sha256(path.join(outputDir, "resources", "app.asar")),
     electronZip: zipPath,
   };
 }
 
-module.exports = { electronZipUrl, assembleRuntime, assembleRuntimeAsync, sha256 };
+module.exports = { PRODUCT_BINARY_NAME, LAUNCHER_NAME, electronZipUrl, assembleRuntime, assembleRuntimeAsync, assertPackagedRuntimeLayout, sha256 };

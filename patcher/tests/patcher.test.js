@@ -23,7 +23,7 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");const h={transportMode:t};} function packaged(){return X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\")} W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); /* --enable-child-ipc */ async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}`;
 }
 
 test("raw hardcoded transport bundle patches all required descriptors", async () => {

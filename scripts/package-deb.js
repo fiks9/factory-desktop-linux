@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
-const { sha256 } = require("./runtime");
+const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout, sha256 } = require("./runtime");
 
 const REQUIRED_PATCHES = [
   "daemon-transport-force-websocket",
@@ -13,6 +13,7 @@ const REQUIRED_PATCHES = [
   "system-droid-cli-resolver",
   "linux-native-updater-button",
   "auto-updater-guard",
+  "packaged-daemon-mode",
   "disable-keyring",
   "protocol-handler",
 ];
@@ -71,7 +72,7 @@ function buildDeb(options) {
   const version = options.version;
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Invalid package version: ${version}`);
   if (!fs.existsSync(path.join(appDir, "resources", "app.asar"))) throw new Error("Staged app is missing resources/app.asar");
-  if (!fs.existsSync(path.join(appDir, "factory-desktop"))) throw new Error("Staged app is missing factory-desktop launcher");
+  assertPackagedRuntimeLayout(appDir, { binaryName: PRODUCT_BINARY_NAME });
   assertNoWorkspaceSymlinks(appDir);
   assertNoBundledDroid(appDir);
   assertAcceptedPatchReport(appDir);

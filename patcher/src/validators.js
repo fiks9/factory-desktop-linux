@@ -64,6 +64,34 @@ function validateNativeUpdater(files) {
   return { validationPassed, evidence: { marker: contextHas(all, marker), override: all.includes("FACTORY_UPDATE_MANAGER_PATH"), unavailable: all.includes("update-manager-unavailable"), noThrowFallback }, errors: validationPassed ? [] : ["Linux native updater bridge was not validated."] };
 }
 
+function validatePackagedDaemonMode(files) {
+  let debugCalls = 0;
+  let unguardedDebug = 0;
+  let packagedDroidBranch = false;
+  let resolverName = null;
+  for (const file of files) {
+    if (!file.content.includes("--enable-child-ipc")) continue;
+    const builderAt = file.content.indexOf("--enable-child-ipc");
+    const builder = file.content.slice(Math.max(0, builderAt - 2200), builderAt + 900);
+    const branch = builder.match(/if\(([\w$]+)\.app\.isPackaged\)([\w$]+)=[\s\S]{0,1500}?else \2=([\w$]+)\(\);/);
+    if (branch) {
+      resolverName = branch[3];
+      const escaped = resolverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const resolver = file.content.match(new RegExp(`function ${escaped}\\(\\)\\{[\\s\\S]{0,700}?\\}`));
+      packagedDroidBranch = Boolean(resolver && resolver[0].includes('return"droid-dev"'));
+    }
+    const calls = [...builder.matchAll(/([\w$]+)\.push\("--debug"\)/g)];
+    debugCalls += calls.length;
+    unguardedDebug += calls.filter((call) => !/\.app\.isPackaged\|\|$/.test(builder.slice(Math.max(0, call.index - 100), call.index))).length;
+  }
+  const validationPassed = debugCalls > 0 && unguardedDebug === 0 && packagedDroidBranch;
+  return {
+    validationPassed,
+    evidence: { debugCalls, unguardedDebug, packagedDroidBranch, resolverName },
+    errors: validationPassed ? [] : ["Could not prove packaged mode excludes droid-dev and daemon --debug arguments."],
+  };
+}
+
 function validatePackaging(root) {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -75,11 +103,13 @@ function validatePackaging(root) {
   const missingFiles = requiredFiles.filter((file) => loaded[file] === "");
   const keyring = missingFiles.length === 0 && requiredFiles.every((file) => loaded[file].includes("FACTORY_DISABLE_KEYRING") && /(?:1|:-1)/.test(loaded[file]));
   const desktop = loaded["packaging/linux/factory-desktop.desktop"];
-  const protocol = desktop.includes("MimeType=x-scheme-handler/factory-desktop;") && desktop.includes("StartupWMClass=Factory");
+  const productionScheme = desktop.includes("MimeType=x-scheme-handler/factory-desktop;") && !desktop.includes("x-scheme-handler/factory-desktop-dev");
+  const productLauncher = desktop.includes("/opt/Factory/factory-desktop-launcher");
+  const protocol = productionScheme && productLauncher && desktop.includes("StartupWMClass=Factory");
   return {
     keyring: { validationPassed: keyring, evidence: { keyring, missingFiles }, errors: keyring ? [] : ["Launcher, desktop entry, and AppRun must force FACTORY_DISABLE_KEYRING=1."] },
-    protocol: { validationPassed: protocol, evidence: { protocol }, errors: protocol ? [] : ["Desktop integration is missing the factory-desktop protocol or StartupWMClass."] },
+    protocol: { validationPassed: protocol, evidence: { protocol, productionScheme, productLauncher }, errors: protocol ? [] : ["Desktop integration is missing the production factory-desktop protocol, product launcher, or StartupWMClass."] },
   };
 }
 
-module.exports = { validateTransport, validateListenIpc, validateAdoption, validateSystemDroid, validateAutoUpdater, validateNativeUpdater, validatePackaging };
+module.exports = { validateTransport, validateListenIpc, validateAdoption, validateSystemDroid, validateAutoUpdater, validateNativeUpdater, validatePackagedDaemonMode, validatePackaging };

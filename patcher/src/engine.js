@@ -30,6 +30,11 @@ function packagingOutcomes(projectRoot) {
   ];
 }
 
+function runtimeOutcomes(files) {
+  const result = validators.validatePackagedDaemonMode(files);
+  return [{ id: "packaged-daemon-mode", description: "Prove packaged daemon paths exclude development arguments", phase: "post-patch-validation", ciPolicy: CRITICAL_POLICY, matchStrategy: "app.isPackaged daemon branch validator", matched: true, patched: false, alreadyPatched: true, validationPassed: result.validationPassed, errors: result.errors, evidence: result.evidence }];
+}
+
 function makeFiles(asarPath) {
   return listJavaScriptFiles(asarPath).map((rawPath) => {
     const filePath = rawPath.replace(/^\/+/, "");
@@ -86,7 +91,7 @@ async function patchAsar(options) {
     }
   }
 
-  for (const outcome of packagingOutcomes(options.projectRoot || path.resolve(__dirname, "..", ".."))) {
+  for (const outcome of [...runtimeOutcomes(workingFiles), ...packagingOutcomes(options.projectRoot || path.resolve(__dirname, "..", ".."))]) {
     outcomes.push(outcome);
     if (!outcome.validationPassed) {
       const error = new Error(`Required patch failed: ${outcome.id}`);

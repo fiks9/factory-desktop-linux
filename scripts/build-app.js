@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { acquireDmg } = require("./dmg");
 const { extractDmg } = require("./extract-dmg");
-const { assembleRuntime } = require("./runtime");
+const { assembleRuntime, assertPackagedRuntimeLayout } = require("./runtime");
 const { patchAsar } = require("../patcher/src/engine");
 
 async function buildApp(options = {}) {
@@ -44,6 +44,8 @@ async function buildApp(options = {}) {
     dmgSha256: dmg.sha256,
     factoryVersion: extracted.version,
     electronVersion: extracted.electronVersion,
+    binaryName: runtime.binaryName,
+    launcherName: runtime.launcherName,
     sourceAsarSha256: extracted.appAsarSha256,
     runtimeAsarSha256: runtime.appAsarSha256,
     patchHook: options.patchedAsarPath ? "external" : "phase2-engine",
@@ -55,6 +57,7 @@ async function buildApp(options = {}) {
     fs.copyFileSync(patchReportPath, path.join(metadataDir, "patch-report.json"));
   }
   fs.writeFileSync(path.join(runtime.outputDir, "build-info.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
+  assertPackagedRuntimeLayout(runtime.outputDir, { binaryName: runtime.binaryName });
   return { dmg, extracted, runtime, buildInfo, appDir: runtime.outputDir };
 }
 

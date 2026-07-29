@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Factory Desktop
 Comment=Factory Desktop for Linux
-Exec=env FACTORY_DISABLE_KEYRING=1 /opt/Factory/factory-desktop %U
+Exec=env FACTORY_DISABLE_KEYRING=1 /opt/Factory/factory-desktop-launcher %U
 Icon=factory-desktop
 Terminal=false
 Type=Application

@@ -16,6 +16,7 @@ const {
 const { plistValue, validateDmgFile } = require("../scripts/extract-dmg");
 const { execFileSync } = require("node:child_process");
 const { assertNoBundledDroid, assertAcceptedPatchReport } = require("../scripts/package-deb");
+const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout } = require("../scripts/runtime");
 
 let server;
 let baseUrl;
@@ -121,4 +122,29 @@ test("package validation fails closed without an accepted patch report", () => {
   fs.mkdirSync(path.join(root, ".factory-linux"), { recursive: true });
   fs.writeFileSync(path.join(root, ".factory-linux", "patch-report.json"), JSON.stringify({ outcomes: [] }));
   assert.throws(() => assertAcceptedPatchReport(root), /Required patch was not accepted/);
+});
+
+function writeSyntheticElf(filePath) {
+  fs.writeFileSync(filePath, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from("synthetic runtime")]), { mode: 0o755 });
+}
+
+test("packaged runtime uses a product-named ELF beside resources/app.asar", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-packaged-layout-"));
+  fs.mkdirSync(path.join(root, "resources"), { recursive: true });
+  writeSyntheticElf(path.join(root, PRODUCT_BINARY_NAME));
+  fs.writeFileSync(path.join(root, "resources", "app.asar"), "synthetic asar");
+  fs.writeFileSync(path.join(root, "factory-desktop-launcher"), '#!/usr/bin/env bash\nAPP_ROOT="$(pwd)"\nexec "$APP_ROOT/factory-desktop" "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, "build-info.json"), JSON.stringify({ binaryName: PRODUCT_BINARY_NAME }));
+
+  const result = assertPackagedRuntimeLayout(root);
+  assert.equal(result.binaryName, "factory-desktop");
+  assert.equal(fs.existsSync(path.join(root, "electron")), false);
+});
+
+test("packaged runtime rejects the Electron development binary name", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-dev-layout-"));
+  fs.mkdirSync(path.join(root, "resources"), { recursive: true });
+  writeSyntheticElf(path.join(root, "electron"));
+  fs.writeFileSync(path.join(root, "resources", "app.asar"), "synthetic asar");
+  assert.throws(() => assertPackagedRuntimeLayout(root), /product binary is missing|must not retain the electron binary name/);
 });

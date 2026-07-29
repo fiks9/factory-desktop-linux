@@ -5,4 +5,4 @@ APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FACTORY_DISABLE_KEYRING="${FACTORY_DISABLE_KEYRING:-1}"
 export FACTORY_APP_ROOT="$APP_ROOT"
 
-exec "$APP_ROOT/electron" "$@"
+exec "$APP_ROOT/factory-desktop" "$@"
