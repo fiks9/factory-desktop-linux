@@ -15,6 +15,7 @@ const REQUIRED_PATCHES = [
   "prevent-listen-ipc",
   "system-daemon-adoption",
   "system-droid-cli-resolver",
+  "linux-window-controls",
   "linux-native-updater-button",
   "auto-updater-guard",
   "packaged-daemon-mode",
@@ -123,7 +124,10 @@ function buildDeb(options) {
   fs.copyFileSync(resolveUpdaterBinary(options), path.join(root, "usr", "bin", "factory-update-manager"));
   fs.chmodSync(path.join(root, "usr", "bin", "factory-update-manager"), 0o755);
   stageInstalledUpdateBuilder(path.resolve(__dirname, ".."), path.join(root, "usr", "lib", "factory-desktop", "update-builder"));
-  if (options.iconPath && fs.existsSync(options.iconPath)) fs.copyFileSync(options.iconPath, path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"));
+  const iconSource = path.join(appDir, "resources", "factory-desktop.png");
+  if (!fs.statSync(iconSource, { throwIfNoEntry: false })?.isFile()) throw new Error(`Staged app is missing required factory-desktop.png icon: ${iconSource}`);
+  fs.copyFileSync(iconSource, path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"));
+  fs.chmodSync(path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png"), 0o644);
   for (const name of ["postinst", "prerm", "postrm"]) {
     const source = path.resolve(__dirname, "..", "packaging", "linux", `factory-desktop.${name}`);
     fs.copyFileSync(source, path.join(control, name));

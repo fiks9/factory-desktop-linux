@@ -1,11 +1,12 @@
 [Desktop Entry]
 Name=Factory Desktop
 Comment=Factory Desktop for Linux
-Exec=AppRun %U
+Exec=env CHROME_DESKTOP=factory-desktop.desktop AppRun %U
 Icon=factory-desktop
 Terminal=false
 Type=Application
 Categories=Development;IDE;
 StartupNotify=true
-StartupWMClass=Factory
+StartupWMClass=factory
+X-GNOME-WMClass=factory
 MimeType=x-scheme-handler/factory-desktop;

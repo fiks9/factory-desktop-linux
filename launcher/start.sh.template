@@ -4,5 +4,7 @@ set -euo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FACTORY_DISABLE_KEYRING="${FACTORY_DISABLE_KEYRING:-1}"
 export FACTORY_APP_ROOT="$APP_ROOT"
+export CHROME_DESKTOP="factory-desktop.desktop"
+export BAMF_DESKTOP_FILE_HINT="/usr/share/applications/factory-desktop.desktop"
 
 exec "$APP_ROOT/factory-desktop" "$@"

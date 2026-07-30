@@ -89,6 +89,23 @@ function validateNativeUpdater(files) {
   };
 }
 
+function validateWindowControls(files) {
+  const all = files.map((file) => file.content).join("\n");
+  const markerCount = (all.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length;
+  const overlayCount = (all.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
+  const iconCount = (all.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
+  const unpatchedCount = (all.match(/titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g) || []).length;
+  const validationPassed = markerCount === 1
+    && overlayCount === 1
+    && iconCount === 1
+    && unpatchedCount === 0;
+  return {
+    validationPassed,
+    evidence: { markerCount, overlayCount, iconCount, unpatchedCount },
+    errors: validationPassed ? [] : ["Linux BrowserWindow controls or packaged icon contract was not validated."],
+  };
+}
+
 function validatePackagedDaemonMode(files) {
   let debugCalls = 0;
   let unguardedDebug = 0;
@@ -130,11 +147,15 @@ function validatePackaging(root) {
   const desktop = loaded["packaging/linux/factory-desktop.desktop"];
   const productionScheme = desktop.includes("MimeType=x-scheme-handler/factory-desktop;") && !desktop.includes("x-scheme-handler/factory-desktop-dev");
   const productLauncher = desktop.includes("/opt/Factory/factory-desktop-launcher");
-  const protocol = productionScheme && productLauncher && desktop.includes("StartupWMClass=Factory");
+  const startupWmClass = desktop.match(/^StartupWMClass=([^\n]+)$/m)?.[1] || null;
+  const gnomeWmClass = desktop.match(/^X-GNOME-WMClass=([^\n]+)$/m)?.[1] || null;
+  const desktopHints = desktop.includes("BAMF_DESKTOP_FILE_HINT=/usr/share/applications/factory-desktop.desktop")
+    && desktop.includes("CHROME_DESKTOP=factory-desktop.desktop");
+  const protocol = productionScheme && productLauncher && startupWmClass === "factory" && gnomeWmClass === "factory" && desktopHints;
   return {
     keyring: { validationPassed: keyring, evidence: { keyring, missingFiles }, errors: keyring ? [] : ["Launcher, desktop entry, and AppRun must force FACTORY_DISABLE_KEYRING=1."] },
-    protocol: { validationPassed: protocol, evidence: { protocol, productionScheme, productLauncher }, errors: protocol ? [] : ["Desktop integration is missing the production factory-desktop protocol, product launcher, or StartupWMClass."] },
+    protocol: { validationPassed: protocol, evidence: { protocol, productionScheme, productLauncher, startupWmClass, gnomeWmClass, desktopHints }, errors: protocol ? [] : ["Desktop integration is missing the production factory-desktop protocol, exact WM class, or launch identity hints."] },
   };
 }
 
-module.exports = { validateTransport, validateListenIpc, validateAdoption, validateSystemDroid, validateAutoUpdater, validateNativeUpdater, validatePackagedDaemonMode, validatePackaging };
+module.exports = { validateTransport, validateListenIpc, validateAdoption, validateSystemDroid, validateAutoUpdater, validateNativeUpdater, validateWindowControls, validatePackagedDaemonMode, validatePackaging };

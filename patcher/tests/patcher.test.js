@@ -25,7 +25,7 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:win32?\"default\":\"hidden\",trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
 }
 
 function commaExpressionBundle() {
@@ -39,7 +39,7 @@ test("raw hardcoded transport bundle patches all required descriptors", async ()
   const { asarPath, root } = await fixture(rawBundle());
   const reportPath = path.join(root, "patch-report.json");
   const report = await patchAsar({ asarPath, reportPath });
-  for (const id of ["daemon-transport-force-websocket", "prevent-listen-ipc", "system-daemon-adoption", "system-droid-cli-resolver", "linux-native-updater-button", "auto-updater-guard"]) {
+  for (const id of ["daemon-transport-force-websocket", "prevent-listen-ipc", "system-daemon-adoption", "system-droid-cli-resolver", "linux-window-controls", "linux-native-updater-button", "auto-updater-guard"]) {
     const outcome = report.outcomes.find((item) => item.id === id);
     assert.equal(outcome.matched, true, id);
     assert.equal(outcome.validationPassed, true, id);
@@ -47,6 +47,36 @@ test("raw hardcoded transport bundle patches all required descriptors", async ()
   const second = await patchAsar({ asarPath });
   assert.ok(second.outcomes.every((item) => item.alreadyPatched), JSON.stringify(second.outcomes));
   assert.equal(fs.existsSync(reportPath), true);
+});
+
+test("Linux window controls patch adds one bounded Electron overlay and packaged icon", async () => {
+  const { asarPath } = await fixture(rawBundle());
+
+  const report = await patchAsar({ asarPath });
+  const outcome = report.outcomes.find((item) => item.id === "linux-window-controls");
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+
+  assert.equal(outcome.matched, true);
+  assert.equal(outcome.validationPassed, true);
+  assert.equal((patched.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length, 1);
+  assert.equal((patched.match(/titleBarOverlay:process\.platform===\"linux\"/g) || []).length, 1);
+  assert.equal((patched.match(/icon:process\.platform===\"linux\"\?process\.resourcesPath\+\"\/factory-desktop\.png\"/g) || []).length, 1);
+  assert.doesNotMatch(patched, /titleBarStyle:win32\?"default":"hidden",trafficLightPosition/);
+
+  const second = await patchAsar({ asarPath });
+  const secondOutcome = second.outcomes.find((item) => item.id === "linux-window-controls");
+  assert.equal(secondOutcome.alreadyPatched, true);
+  assert.equal(secondOutcome.validationPassed, true);
+});
+
+test("Linux window controls patch fails closed when the BrowserWindow contract drifts", async () => {
+  const drifted = rawBundle().replace(
+    'trafficLightPosition:win32?void 0:{x:12,y:10}',
+    'trafficLightPosition:win32?void 0:{x:16,y:12}',
+  );
+  const { asarPath } = await fixture(drifted);
+
+  await assert.rejects(() => patchAsar({ asarPath }), /linux-window-controls/);
 });
 
 test("statsig resolver uses the structural matcher", async () => {
@@ -175,4 +205,7 @@ test("packaging validators prove keyring and protocol integration", () => {
   const result = validatePackaging(root);
   assert.equal(result.keyring.validationPassed, true);
   assert.equal(result.protocol.validationPassed, true);
+  assert.equal(result.protocol.evidence.startupWmClass, "factory");
+  assert.equal(result.protocol.evidence.gnomeWmClass, "factory");
+  assert.equal(result.protocol.evidence.desktopHints, true);
 });

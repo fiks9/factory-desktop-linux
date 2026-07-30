@@ -21,6 +21,54 @@ const { plistValue, validateDmgFile } = require("../scripts/extract-dmg");
 const { execFileSync } = require("node:child_process");
 const { assertNoBundledDroid, assertAcceptedPatchReport } = require("../scripts/package-deb");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout } = require("../scripts/runtime");
+const { extractPngIconFromIcns, readPngDimensions } = require("../scripts/icon");
+const zlib = require("node:zlib");
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const name = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  name.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([name, data])), 8 + data.length);
+  return chunk;
+}
+
+function solidPng(width, height) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 6, 0, 0, 0], 8);
+  const row = Buffer.alloc(1 + width * 4);
+  for (let index = 1; index < row.length; index += 4) row.set([23, 23, 23, 255], index);
+  const image = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", zlib.deflateSync(image)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function icnsWithPng(type, png) {
+  const entry = Buffer.alloc(8 + png.length);
+  entry.write(type, 0, 4, "ascii");
+  entry.writeUInt32BE(entry.length, 4);
+  png.copy(entry, 8);
+  const header = Buffer.alloc(8);
+  header.write("icns", 0, 4, "ascii");
+  header.writeUInt32BE(header.length + entry.length, 4);
+  return Buffer.concat([header, entry]);
+}
 
 let server;
 let baseUrl;
@@ -137,6 +185,40 @@ test("plist parsing exposes Factory and Electron versions", () => {
   assert.equal(plistValue(plist, "CFBundleShortVersionString"), "0.139.0");
 });
 
+test("Factory ICNS conversion writes a structurally valid 512px PNG", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-icon-conversion-"));
+  try {
+    const source = path.join(root, "factory.icns");
+    const output = path.join(root, "factory-desktop.png");
+    fs.writeFileSync(source, icnsWithPng("ic09", solidPng(512, 512)));
+
+    const result = extractPngIconFromIcns(source, output, 512);
+
+    assert.deepEqual(readPngDimensions(fs.readFileSync(output)), { width: 512, height: 512 });
+    assert.equal(result.width, 512);
+    assert.equal(result.height, 512);
+    assert.match(result.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(fs.statSync(output).mode & 0o777, 0o644);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Factory ICNS conversion fails closed for malformed or missing 512px PNG data", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-icon-rejection-"));
+  try {
+    const malformed = path.join(root, "malformed.icns");
+    const wrongSize = path.join(root, "wrong-size.icns");
+    fs.writeFileSync(malformed, Buffer.from("not-icns"));
+    fs.writeFileSync(wrongSize, icnsWithPng("ic08", solidPng(256, 256)));
+
+    assert.throws(() => extractPngIconFromIcns(malformed, path.join(root, "bad.png"), 512), /ICNS/i);
+    assert.throws(() => extractPngIconFromIcns(wrongSize, path.join(root, "small.png"), 512), /512/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DMG acceptance fails closed when required app entries are absent", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-phase1-invalid-"));
   const invalid = path.join(root, "not-a-dmg");
@@ -185,12 +267,24 @@ test("packaged runtime uses a product-named ELF beside resources/app.asar", () =
   fs.mkdirSync(path.join(root, "resources"), { recursive: true });
   writeSyntheticElf(path.join(root, PRODUCT_BINARY_NAME));
   fs.writeFileSync(path.join(root, "resources", "app.asar"), "synthetic asar");
+  fs.writeFileSync(path.join(root, "resources", "factory-desktop.png"), solidPng(512, 512));
   fs.writeFileSync(path.join(root, "factory-desktop-launcher"), '#!/usr/bin/env bash\nAPP_ROOT="$(pwd)"\nexec "$APP_ROOT/factory-desktop" "$@"\n', { mode: 0o755 });
   fs.writeFileSync(path.join(root, "build-info.json"), JSON.stringify({ binaryName: PRODUCT_BINARY_NAME }));
 
   const result = assertPackagedRuntimeLayout(root);
   assert.equal(result.binaryName, "factory-desktop");
+  assert.equal(result.iconPath, path.join(root, "resources", "factory-desktop.png"));
   assert.equal(fs.existsSync(path.join(root, "electron")), false);
+});
+
+test("packaged runtime rejects a missing Linux application icon", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-packaged-no-icon-"));
+  fs.mkdirSync(path.join(root, "resources"), { recursive: true });
+  writeSyntheticElf(path.join(root, PRODUCT_BINARY_NAME));
+  fs.writeFileSync(path.join(root, "resources", "app.asar"), "synthetic asar");
+  fs.writeFileSync(path.join(root, "factory-desktop-launcher"), '#!/usr/bin/env bash\nAPP_ROOT="$(pwd)"\nexec "$APP_ROOT/factory-desktop" "$@"\n', { mode: 0o755 });
+
+  assert.throws(() => assertPackagedRuntimeLayout(root), /factory-desktop\.png|icon/i);
 });
 
 test("packaged runtime rejects the Electron development binary name", () => {

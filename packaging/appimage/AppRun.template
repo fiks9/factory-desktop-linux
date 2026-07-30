@@ -3,6 +3,8 @@ set -euo pipefail
 
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FACTORY_DISABLE_KEYRING=1
+export CHROME_DESKTOP="factory-desktop.desktop"
+export BAMF_DESKTOP_FILE_HINT="$APPDIR/factory-desktop.desktop"
 
 # AppImage never adopts a system native-package updater.
 export FACTORY_UPDATE_MANAGER_UNAVAILABLE=1

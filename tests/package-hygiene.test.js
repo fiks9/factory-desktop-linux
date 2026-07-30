@@ -13,12 +13,15 @@ const { buildDeb } = require("../scripts/package-deb");
 const { buildRpm } = require("../scripts/package-rpm");
 const { repositoryCommit } = require("../scripts/release-metadata");
 const { sha256 } = require("../scripts/runtime");
+const { syntheticPng } = require("../scripts/create-synthetic-dmg");
 const {
   assertAllowedNativePayload,
   assertExactDebMaintainerScripts,
+  assertDesktopIdentity,
   assertNativePackageMetadata,
   assertNativeBuilderProvenance,
   assertNativeUpdaterBridge,
+  assertPackageIcon,
   assertRpmScriptlets,
   inspectExtracted,
 } = require("../scripts/inspect-package");
@@ -28,6 +31,7 @@ const ACCEPTED_PATCH_IDS = [
   "prevent-listen-ipc",
   "system-daemon-adoption",
   "system-droid-cli-resolver",
+  "linux-window-controls",
   "linux-native-updater-button",
   "auto-updater-guard",
   "packaged-daemon-mode",
@@ -45,6 +49,7 @@ async function writeSyntaxInvalidStagedApp(appDir) {
   );
   fs.mkdirSync(path.join(appDir, "resources"), { recursive: true });
   await asar.createPackage(source, path.join(appDir, "resources", "app.asar"));
+  fs.writeFileSync(path.join(appDir, "resources", "factory-desktop.png"), syntheticPng(512));
   fs.writeFileSync(
     path.join(appDir, "factory-desktop"),
     Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from("syntax fixture")]),
@@ -63,6 +68,23 @@ async function writeSyntaxInvalidStagedApp(appDir) {
     outcomes: ACCEPTED_PATCH_IDS.map((id) => ({ id, matched: true, validationPassed: true })),
   }));
 }
+
+test("package icon and desktop identity validators fail closed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-package-identity-"));
+  try {
+    const icon = path.join(root, "usr", "share", "icons", "hicolor", "512x512", "apps", "factory-desktop.png");
+    fs.mkdirSync(path.dirname(icon), { recursive: true });
+    fs.writeFileSync(icon, syntheticPng(512), { mode: 0o644 });
+    assert.deepEqual(assertPackageIcon(root, "deb"), { path: "usr/share/icons/hicolor/512x512/apps/factory-desktop.png", width: 512, height: 512, mode: 0o644 });
+    assert.doesNotThrow(() => assertDesktopIdentity(root, "deb", "StartupWMClass=factory\nX-GNOME-WMClass=factory\nBAMF_DESKTOP_FILE_HINT=/usr/share/applications/factory-desktop.desktop\nCHROME_DESKTOP=factory-desktop.desktop\n"));
+    fs.chmodSync(icon, 0o664);
+    assert.throws(() => assertPackageIcon(root, "deb"), /0644/);
+    fs.chmodSync(icon, 0o644);
+    fs.writeFileSync(icon, syntheticPng(256));
+    assert.throws(() => assertPackageIcon(root, "deb"), /512x512/);
+    assert.throws(() => assertDesktopIdentity(root, "deb", "StartupWMClass=Factory\nX-GNOME-WMClass=factory\n"), /StartupWMClass=factory/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("native updater bridge is fixed, read-only, and absent from AppImage", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-update-bridge-"));

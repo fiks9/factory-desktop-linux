@@ -10,6 +10,54 @@ function mainFile(files, predicate) {
   return files.find((file) => predicate(file.content));
 }
 
+function windowControls(files) {
+  const id = "linux-window-controls";
+  const marker = MARKER(id);
+  const currentPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
+  const currentMatches = [];
+  let markerCount = 0;
+  let overlayCount = 0;
+  let iconCount = 0;
+  for (const file of files) {
+    markerCount += (file.content.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length;
+    overlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
+    iconCount += (file.content.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
+    for (const match of file.content.matchAll(currentPattern)) {
+      currentMatches.push({ file, text: match[0], alias: match[1] });
+    }
+  }
+  const alreadyPatched = markerCount === 1
+    && overlayCount === 1
+    && iconCount === 1
+    && currentMatches.length === 0;
+  if (alreadyPatched) {
+    const file = files.find((candidate) => candidate.content.includes(marker));
+    return result(id, true, false, true, [], {
+      file: file?.path,
+      markerCount,
+      overlayCount,
+      iconCount,
+      matcher: "browser-window-titlebar-traffic-light-contract",
+    });
+  }
+  if (markerCount !== 0 || overlayCount !== 0 || iconCount !== 0 || currentMatches.length !== 1) {
+    return result(id, false, false, false, [], {
+      markerCount,
+      overlayCount,
+      iconCount,
+      matchCount: currentMatches.length,
+      matcher: "browser-window-titlebar-traffic-light-contract",
+    });
+  }
+  const [{ file, text, alias }] = currentMatches;
+  const replacement = `titleBarStyle:${alias}?"default":"hidden",${marker}titleBarOverlay:process.platform==="linux"?{color:"#171717",symbolColor:"#f5f5f5",height:30}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:${alias}?void 0:{x:12,y:10},`;
+  return result(id, true, true, false, [[file.path, file.content.replace(text, replacement)]], {
+    file: file.path,
+    matchCount: 1,
+    matcher: "browser-window-titlebar-traffic-light-contract",
+  });
+}
+
 function daemonTransport(files) {
   const marker = MARKER("daemon-transport-force-websocket");
   const existing = mainFile(files, (content) => content.includes(marker));
@@ -207,4 +255,4 @@ function nativeUpdater(files) {
   });
 }
 
-module.exports = { daemonTransport, preventListen, systemDroid, adoption, autoUpdater, nativeUpdater };
+module.exports = { daemonTransport, preventListen, systemDroid, adoption, autoUpdater, nativeUpdater, windowControls };

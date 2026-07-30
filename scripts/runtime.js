@@ -5,6 +5,7 @@ const path = require("node:path");
 const https = require("node:https");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
+const { extractPngIconFromIcns, readPngDimensions } = require("./icon");
 
 const PRODUCT_BINARY_NAME = "factory-desktop";
 const LAUNCHER_NAME = "factory-desktop-launcher";
@@ -58,12 +59,17 @@ function assertPackagedRuntimeLayout(appDir, options = {}) {
   const binaryPath = path.join(appDir, binaryName);
   const legacyElectronPath = path.join(appDir, "electron");
   const asarPath = path.join(appDir, "resources", "app.asar");
+  const iconPath = path.join(appDir, "resources", "factory-desktop.png");
   const launcherPath = path.join(appDir, LAUNCHER_NAME);
   if (!isExecutable(binaryPath)) throw new Error(`Packaged product binary is missing or not executable: ${binaryPath}`);
   const magic = fs.readFileSync(binaryPath).subarray(0, 4);
   if (!magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) throw new Error(`Packaged product binary is not an ELF executable: ${binaryPath}`);
   if (fs.existsSync(legacyElectronPath)) throw new Error(`Staged runtime must not retain the electron binary name: ${legacyElectronPath}`);
   if (!fs.statSync(asarPath, { throwIfNoEntry: false })?.isFile()) throw new Error(`Staged runtime is missing resources/app.asar: ${asarPath}`);
+  const iconMetadata = fs.lstatSync(iconPath, { throwIfNoEntry: false });
+  if (!iconMetadata?.isFile() || iconMetadata.isSymbolicLink()) throw new Error(`Staged runtime is missing its regular factory-desktop.png icon: ${iconPath}`);
+  const iconDimensions = readPngDimensions(fs.readFileSync(iconPath));
+  if (iconDimensions.width !== 512 || iconDimensions.height !== 512) throw new Error(`Staged runtime icon must be exactly 512x512: ${iconPath}`);
   if (!isExecutable(launcherPath)) throw new Error(`Packaged launcher is missing or not executable: ${launcherPath}`);
   const launcher = fs.readFileSync(launcherPath, "utf8");
   if (!launcher.includes(`exec "$APP_ROOT/${binaryName}" "$@"`)) throw new Error(`Launcher does not exec the product-named binary: ${launcherPath}`);
@@ -73,7 +79,7 @@ function assertPackagedRuntimeLayout(appDir, options = {}) {
     const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, "utf8"));
     if (buildInfo.binaryName !== binaryName) throw new Error(`build-info binaryName mismatch: expected ${binaryName}, got ${buildInfo.binaryName}`);
   }
-  return { binaryName, binaryPath, launcherName: LAUNCHER_NAME, asarPath };
+  return { binaryName, binaryPath, launcherName: LAUNCHER_NAME, asarPath, iconPath };
 }
 
 async function assembleRuntime(options) {
@@ -102,6 +108,8 @@ async function assembleRuntimeAsync(options) {
   fs.renameSync(electronBinary, productBinary);
   fs.mkdirSync(path.join(temporary, "resources"), { recursive: true });
   fs.copyFileSync(sourceAsar, path.join(temporary, "resources", "app.asar"));
+  if (!extracted.iconPath) throw new Error("DMG acceptance did not provide the Factory application icon");
+  extractPngIconFromIcns(extracted.iconPath, path.join(temporary, "resources", "factory-desktop.png"), 512);
   fs.copyFileSync(path.join(__dirname, "..", "launcher", "start.sh.template"), path.join(temporary, LAUNCHER_NAME));
   fs.chmodSync(path.join(temporary, LAUNCHER_NAME), 0o755);
   fs.rmSync(path.join(temporary, "resources", "default_app.asar"), { force: true });
