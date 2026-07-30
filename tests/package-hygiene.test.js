@@ -184,6 +184,23 @@ test("hygiene gate permits only the canonical installed copy of its own rule tex
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("canonical installed builder path is product content but never a symlink target", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-installed-path-content-"));
+  const installedBuilder = "/usr/lib/factory-desktop/update-builder";
+  try {
+    const rpmBuilder = path.join(root, "scripts", "package-rpm.js");
+    fs.mkdirSync(path.dirname(rpmBuilder), { recursive: true });
+    fs.writeFileSync(rpmBuilder, `const packagedBuilder = ${JSON.stringify(installedBuilder)};\n`);
+    assert.doesNotThrow(() => scanPackageTree(root, { workspaceRoot: installedBuilder }));
+
+    fs.symlinkSync(`${installedBuilder}/scripts/package-rpm.js`, path.join(root, "installed-backlink"));
+    assert.throws(
+      () => scanPackageTree(root, { workspaceRoot: installedBuilder }),
+      /Symlink contains forbidden build path/,
+    );
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("update-builder is installed cleanly instead of copying workspace node_modules", () => {
   const destination = fs.mkdtempSync(path.join(os.tmpdir(), "factory-update-builder-"));
   try {

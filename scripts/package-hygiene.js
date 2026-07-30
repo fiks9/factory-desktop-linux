@@ -5,6 +5,8 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { repositoryCommit, writeBuilderProvenance } = require("./release-metadata");
 
+const INSTALLED_UPDATE_BUILDER_ROOT = "/usr/lib/factory-desktop/update-builder";
+
 function isExecutable(stat) { return (stat.mode & 0o111) !== 0; }
 function isElf(file) {
   try { return fs.readFileSync(file).subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])); } catch { return false; }
@@ -31,7 +33,11 @@ function scanPackageTree(root, options = {}) {
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Hygiene root is not a directory: ${root}`);
   const errors = [];
   const forbiddenLinks = ["/home/runner/work", "/tmp/", ...(options.forbiddenPaths || []), options.workspaceRoot].filter(Boolean);
-  const forbiddenContents = ["/home/runner/work", options.workspaceRoot].filter(Boolean);
+  const workspaceContentRoot = options.workspaceRoot
+    && path.resolve(options.workspaceRoot) !== INSTALLED_UPDATE_BUILDER_ROOT
+    ? options.workspaceRoot
+    : null;
+  const forbiddenContents = ["/home/runner/work", workspaceContentRoot].filter(Boolean);
   let files = 0, symlinks = 0, executables = 0;
   const checkExecutable = (file, reason) => {
     const stat = fs.statSync(file);
