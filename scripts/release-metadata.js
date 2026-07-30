@@ -8,6 +8,7 @@ const { sha256File } = require("./dmg");
 const { releaseIdentity } = require("./release-identity");
 
 const FORMATS = new Set(["deb", "rpm", "appimage"]);
+const BUILDER_PROVENANCE_FILENAME = "build-provenance.json";
 const SOURCE_FIELDS = [
   "factoryVersion", "electronVersion", "dmgSha256", "rawAsarSha256",
   "patchedAsarSha256", "patchReportSha256", "binaryName",
@@ -21,9 +22,33 @@ function assertDigest(value, name) {
   }
 }
 
+function readBuilderProvenance(root) {
+  const provenancePath = path.join(root, BUILDER_PROVENANCE_FILENAME);
+  const provenanceStat = fs.lstatSync(provenancePath, { throwIfNoEntry: false });
+  if (!provenanceStat) return null;
+  if (!provenanceStat.isFile() || (provenanceStat.mode & 0o022) !== 0) {
+    throw new Error("Installed update-builder provenance must be a non-writable regular file");
+  }
+  let provenance;
+  try { provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8")); }
+  catch (error) { throw new Error(`Installed update-builder provenance is invalid JSON: ${error.message}`); }
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)
+    || Object.keys(provenance).sort().join(",") !== "repositoryCommit,schemaVersion"
+    || provenance.schemaVersion !== 1
+    || !/^[a-f0-9]{40}$/.test(provenance.repositoryCommit)) {
+    throw new Error("Installed update-builder provenance is invalid");
+  }
+  return provenance.repositoryCommit;
+}
+
 function repositoryCommit(root = path.resolve(__dirname, "..")) {
   const fromEnvironment = process.env.FACTORY_REPOSITORY_COMMIT;
-  if (fromEnvironment && /^[a-f0-9]{40}$/.test(fromEnvironment)) return fromEnvironment;
+  if (fromEnvironment !== undefined) {
+    if (!/^[a-f0-9]{40}$/.test(fromEnvironment)) throw new Error("FACTORY_REPOSITORY_COMMIT is not a full lowercase Git SHA");
+    return fromEnvironment;
+  }
+  const fromProvenance = readBuilderProvenance(root);
+  if (fromProvenance) return fromProvenance;
   const value = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: root,
     encoding: "utf8",
@@ -31,6 +56,15 @@ function repositoryCommit(root = path.resolve(__dirname, "..")) {
   }).trim();
   if (!/^[a-f0-9]{40}$/.test(value)) throw new Error("Repository commit is not a full Git SHA");
   return value;
+}
+
+function writeBuilderProvenance(root, commit) {
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Update-builder provenance commit is invalid");
+  fs.mkdirSync(root, { recursive: true, mode: 0o755 });
+  const provenancePath = path.join(root, BUILDER_PROVENANCE_FILENAME);
+  fs.writeFileSync(provenancePath, `${JSON.stringify({ schemaVersion: 1, repositoryCommit: commit }, null, 2)}\n`, { mode: 0o644 });
+  fs.chmodSync(provenancePath, 0o644);
+  return provenancePath;
 }
 
 function buildEnvironment(root) {
@@ -330,8 +364,10 @@ function verifyReleaseBundle(directory, expected) {
 }
 
 module.exports = {
+  BUILDER_PROVENANCE_FILENAME,
   buildEnvironment,
   createReleaseManifest,
+  readBuilderProvenance,
   repositoryCommit,
   validateBuildInfo,
   validateReleaseContext,
@@ -340,5 +376,6 @@ module.exports = {
   verifyChecksums,
   withPackageIdentity,
   writeChecksums,
+  writeBuilderProvenance,
   writePackageBuildInfo,
 };

@@ -4,17 +4,20 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const test = require("node:test");
 const asar = require(require.resolve("@electron/asar", { paths: [path.resolve(__dirname, "..", "patcher")] }));
 const { scanPackageTree, stageUpdateBuilder, stageInstalledUpdateBuilder } = require("../scripts/package-hygiene");
 const { buildAppImage } = require("../scripts/package-appimage");
 const { buildDeb } = require("../scripts/package-deb");
 const { buildRpm } = require("../scripts/package-rpm");
+const { repositoryCommit } = require("../scripts/release-metadata");
 const { sha256 } = require("../scripts/runtime");
 const {
   assertAllowedNativePayload,
   assertExactDebMaintainerScripts,
   assertNativePackageMetadata,
+  assertNativeBuilderProvenance,
   assertNativeUpdaterBridge,
   assertRpmScriptlets,
   inspectExtracted,
@@ -87,6 +90,28 @@ test("native updater bridge is fixed, read-only, and absent from AppImage", () =
     assert.throws(() => assertNativeUpdaterBridge(root, "rpm"), /0644/);
     fs.chmodSync(bridge, 0o644);
     assert.throws(() => assertNativeUpdaterBridge(root, "appimage"), /must not contain/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native update-builder provenance is fixed, read-only, and commit-bound", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-builder-provenance-"));
+  const commit = "1".repeat(40);
+  try {
+    const provenance = path.join(root, "usr", "lib", "factory-desktop", "update-builder", "build-provenance.json");
+    fs.mkdirSync(path.dirname(provenance), { recursive: true });
+    fs.writeFileSync(provenance, `${JSON.stringify({ schemaVersion: 1, repositoryCommit: commit })}\n`, { mode: 0o644 });
+
+    assert.doesNotThrow(() => assertNativeBuilderProvenance(root, "deb", commit));
+    assert.throws(() => assertNativeBuilderProvenance(root, "rpm", "2".repeat(40)), /commit mismatch/);
+    fs.chmodSync(provenance, 0o664);
+    assert.throws(() => assertNativeBuilderProvenance(root, "deb", commit), /non-writable regular file/);
+    fs.rmSync(provenance);
+    fs.symlinkSync("missing.json", provenance);
+    assert.throws(() => assertNativeBuilderProvenance(root, "rpm", commit), /non-writable regular file/);
+    fs.rmSync(provenance);
+    assert.doesNotThrow(() => assertNativeBuilderProvenance(root, "appimage", commit));
+    fs.writeFileSync(provenance, `${JSON.stringify({ schemaVersion: 1, repositoryCommit: commit })}\n`, { mode: 0o644 });
+    assert.throws(() => assertNativeBuilderProvenance(root, "appimage", commit), /must not contain/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -177,6 +202,10 @@ test("installed update-builder carries scripts and a clean patcher dependency tr
     assert.equal(fs.existsSync(path.join(builder, "scripts", "build-app.js")), true);
     assert.equal(fs.existsSync(path.join(builder, "scripts", "inspect-package.js")), true);
     assert.equal(fs.existsSync(path.join(builder, "patcher", "node_modules", "@electron", "asar")), true);
+    const expectedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: path.resolve(__dirname, ".."), encoding: "utf8",
+    }).trim();
+    assert.equal(repositoryCommit(builder), expectedCommit);
   } finally { fs.rmSync(destination, { recursive: true, force: true }); }
 });
 

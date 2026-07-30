@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { repositoryCommit, writeBuilderProvenance } = require("./release-metadata");
 
 function isExecutable(stat) { return (stat.mode & 0o111) !== 0; }
 function isElf(file) {
@@ -90,10 +91,12 @@ function stageUpdateBuilder(sourceRoot, destination) {
 function stageInstalledUpdateBuilder(sourceRoot, destination) {
   sourceRoot = path.resolve(sourceRoot); destination = path.resolve(destination);
   for (const entry of ["assets", "launcher", "packaging", "scripts", "patcher"]) if (!fs.existsSync(path.join(sourceRoot, entry))) throw new Error(`Installed update-builder source is missing ${entry}`);
+  const commit = repositoryCommit(sourceRoot);
   fs.rmSync(destination, { recursive: true, force: true });
   fs.mkdirSync(destination, { recursive: true, mode: 0o755 });
   for (const entry of ["assets", "launcher", "packaging", "scripts"]) fs.cpSync(path.join(sourceRoot, entry), path.join(destination, entry), { recursive: true, dereference: false });
   stageUpdateBuilder(path.join(sourceRoot, "patcher"), path.join(destination, "patcher"));
+  writeBuilderProvenance(destination, commit);
   return scanPackageTree(destination, { workspaceRoot: sourceRoot });
 }
 
