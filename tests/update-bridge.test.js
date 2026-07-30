@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createBridge, parseStatus } = require("../packaging/linux/update-bridge.cjs");
 
+const HELPER_AVAILABLE = { helperExists: () => true };
+
 const STATES = {
   idle: "idle",
   checking: "checking",
@@ -53,15 +55,15 @@ test("helper missing, timeout, and invalid output fail without crashing", async 
   const missing = createBridge({ helperExists: () => false });
   assert.equal((await missing.getState()).linuxState, "update-manager-unavailable");
 
-  const timeout = createBridge({ run: async () => { throw new Error("timed out"); } });
+  const timeout = createBridge({ ...HELPER_AVAILABLE, run: async () => { throw new Error("timed out"); } });
   assert.equal((await timeout.getState()).linuxState, "failed");
 
-  const invalid = createBridge({ run: async () => "{}" });
+  const invalid = createBridge({ ...HELPER_AVAILABLE, run: async () => "{}" });
   assert.equal((await invalid.getState()).linuxState, "failed");
 });
 
 test("bridge exposes only whitelisted actions with empty validated payloads", async () => {
-  const bridge = createBridge({ run: async () => envelope("idle") });
+  const bridge = createBridge({ ...HELPER_AVAILABLE, run: async () => envelope("idle") });
   await assert.rejects(() => bridge.invoke("exec", { command: "sh" }), /unsupported/);
   await assert.rejects(() => bridge.invoke("getState", { path: "/tmp/evil" }), /payload/);
   assert.equal((await bridge.invoke("getState", {})).linuxState, "idle");
@@ -71,6 +73,7 @@ test("check now detaches the long-running updater instead of timing out the buil
   const runs = [];
   const spawns = [];
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async (args) => {
       runs.push(args);
       return envelope("idle");
@@ -88,6 +91,7 @@ test("check now detaches the long-running updater instead of timing out the buil
 test("retry check is available only from a failed state and starts one detached check", async () => {
   const spawns = [];
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async () => envelope("failed", { message: "Rejected" }),
     spawn: (args) => spawns.push(args),
     dialog: { showMessageBox: async () => ({ response: 0 }) },
@@ -106,6 +110,7 @@ test("dispatch broadcasts only validated state through updates:state", async () 
     webContents: { send: (channel, state) => messages.push([channel, state]) },
   };
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async () => envelope("checking"),
     windows: { getAllWindows: () => [window] },
   });
@@ -120,6 +125,7 @@ test("ready install requires a parented confirmation then prepares and quits", a
   const calls = [];
   const parent = { id: 7 };
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async (args) => {
       calls.push(args);
       return args[0] === "status" ? envelope("ready-pending-exit") : envelope("ready-pending-exit", { installRequested: true });
@@ -145,6 +151,7 @@ test("manual dialog copies command only and dismiss does not discard candidate",
   const copied = [];
   const parent = { id: 9 };
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async (args) => {
       calls.push(args);
       return envelope("install-failed-manual-action", { manualCommand: "sudo factory-update-manager reconcile-install" });
@@ -168,6 +175,7 @@ test("failed transition offers one retry dialog, not one per poll", async () => 
   let dialogs = 0;
   const calls = [];
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async (args) => { calls.push(args); return envelope("failed", { message: "Rejected" }); },
     dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
     windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
@@ -183,6 +191,7 @@ test("failed transition offers one retry dialog, not one per poll", async () => 
 test("status IPC presents a failed transition once", async () => {
   let dialogs = 0;
   const bridge = createBridge({
+    ...HELPER_AVAILABLE,
     run: async () => envelope("failed", { message: "Rejected" }),
     dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
     windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
