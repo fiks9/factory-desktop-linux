@@ -5,14 +5,61 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const asar = require(require.resolve("@electron/asar", { paths: [path.resolve(__dirname, "..", "patcher")] }));
 const { scanPackageTree, stageUpdateBuilder, stageInstalledUpdateBuilder } = require("../scripts/package-hygiene");
+const { buildAppImage } = require("../scripts/package-appimage");
+const { buildDeb } = require("../scripts/package-deb");
+const { buildRpm } = require("../scripts/package-rpm");
+const { sha256 } = require("../scripts/runtime");
 const {
   assertAllowedNativePayload,
   assertExactDebMaintainerScripts,
   assertNativePackageMetadata,
   assertNativeUpdaterBridge,
   assertRpmScriptlets,
+  inspectExtracted,
 } = require("../scripts/inspect-package");
+
+const ACCEPTED_PATCH_IDS = [
+  "daemon-transport-force-websocket",
+  "prevent-listen-ipc",
+  "system-daemon-adoption",
+  "system-droid-cli-resolver",
+  "linux-native-updater-button",
+  "auto-updater-guard",
+  "packaged-daemon-mode",
+  "disable-keyring",
+  "protocol-handler",
+  "bundle-javascript-syntax",
+];
+
+async function writeSyntaxInvalidStagedApp(appDir) {
+  const source = path.join(path.dirname(appDir), "asar-source");
+  fs.mkdirSync(path.join(source, ".vite", "build"), { recursive: true });
+  fs.writeFileSync(
+    path.join(source, ".vite", "build", "index.js"),
+    '(()=>0),/* factory-linux:linux-native-updater-button */const broken=1',
+  );
+  fs.mkdirSync(path.join(appDir, "resources"), { recursive: true });
+  await asar.createPackage(source, path.join(appDir, "resources", "app.asar"));
+  fs.writeFileSync(
+    path.join(appDir, "factory-desktop"),
+    Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from("syntax fixture")]),
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(appDir, "factory-desktop-launcher"),
+    '#!/usr/bin/env bash\nAPP_ROOT="$(cd "$(dirname "$0")" && pwd)"\nexec "$APP_ROOT/factory-desktop" "$@"\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(path.join(appDir, "build-info.json"), JSON.stringify({ binaryName: "factory-desktop" }));
+  fs.mkdirSync(path.join(appDir, ".factory-linux"), { recursive: true });
+  fs.writeFileSync(path.join(appDir, ".factory-linux", "patch-report.json"), JSON.stringify({
+    schemaVersion: 1,
+    finalHash: sha256(path.join(appDir, "resources", "app.asar")),
+    outcomes: ACCEPTED_PATCH_IDS.map((id) => ({ id, matched: true, validationPassed: true })),
+  }));
+}
 
 test("native updater bridge is fixed, read-only, and absent from AppImage", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-update-bridge-"));
@@ -41,6 +88,36 @@ test("native updater bridge is fixed, read-only, and absent from AppImage", () =
     fs.chmodSync(bridge, 0o644);
     assert.throws(() => assertNativeUpdaterBridge(root, "appimage"), /must not contain/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("package builders reject a syntax-invalid staged ASAR before packaging", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-invalid-staged-asar-"));
+  try {
+    const appDir = path.join(root, "app");
+    await writeSyntaxInvalidStagedApp(appDir);
+    const options = { appDir, version: "0.139.0", outputDir: path.join(root, "dist") };
+
+    assert.throws(() => buildDeb(options), /JavaScript syntax/);
+    assert.throws(() => buildRpm(options), /JavaScript syntax/);
+    await assert.rejects(() => buildAppImage(options), /JavaScript syntax/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extracted deb rpm and AppImage payloads reject syntax-invalid ASARs", async () => {
+  for (const format of ["deb", "rpm", "appimage"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `factory-invalid-${format}-`));
+    try {
+      const appDir = format === "appimage"
+        ? path.join(root, "usr", "lib", "factory-desktop")
+        : path.join(root, "opt", "Factory");
+      await writeSyntaxInvalidStagedApp(appDir);
+      assert.throws(() => inspectExtracted(root, format), /JavaScript syntax/, format);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test("hygiene gate rejects absolute CI .bin symlinks", () => {
@@ -113,6 +190,17 @@ test("native package metadata is bound to Factory Desktop build identity", () =>
   assert.throws(() => assertNativePackageMetadata("rpm", {
     name: "factory-desktop", version: "0.140.0", architecture: "x86_64",
   }, "0.139.0"), /package version/);
+
+  assert.doesNotThrow(() => assertNativePackageMetadata("deb", {
+    name: "factory-desktop", version: "0.139.0-1", architecture: "amd64",
+  }, {
+    factoryVersion: "0.139.0", packageVersion: "0.139.0-1", packageRelease: "1",
+  }));
+  assert.doesNotThrow(() => assertNativePackageMetadata("rpm", {
+    name: "factory-desktop", version: "0.139.0", release: "2", architecture: "x86_64",
+  }, {
+    factoryVersion: "0.139.0", packageVersion: "0.139.0", packageRelease: "2",
+  }));
 });
 
 test("native payload rejects files outside canonical installation roots", () => {

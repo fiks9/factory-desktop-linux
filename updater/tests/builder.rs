@@ -34,6 +34,35 @@ esac
     node
 }
 
+fn write_syntax_rejecting_node_fixture(root: &std::path::Path) -> std::path::PathBuf {
+    let node = root.join("fake-node-syntax-rejection");
+    fs::write(
+        &node,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+script="$1"
+shift
+case "$script" in
+  */build-app.js)
+    mkdir -p "$FACTORY_FIXTURE_APP"
+    printf '{"appDir":"%s"}\n' "$FACTORY_FIXTURE_APP"
+    ;;
+  */package-deb.js)
+    printf package > "$FACTORY_FIXTURE_PACKAGE"
+    printf '{"path":"%s","sha256":"ignored","bytes":7}\n' "$FACTORY_FIXTURE_PACKAGE"
+    ;;
+  */inspect-package.js)
+    printf '%s\n' 'Package inspection failed: Bundle JavaScript syntax validation failed' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    node
+}
+
 #[test]
 fn accepted_candidate_has_a_verified_manifest() {
     let root = tempfile::tempdir().unwrap();
@@ -105,5 +134,48 @@ fn inspector_failure_rejects_candidate_and_removes_workspace() {
     });
 
     assert!(result.is_err());
+    assert!(!workspace.exists());
+}
+
+#[test]
+fn syntax_invalid_package_is_not_promoted_to_a_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let scripts = root.path().join("scripts");
+    fs::create_dir(&scripts).unwrap();
+    for file in ["build-app.js", "package-deb.js", "inspect-package.js"] {
+        fs::write(scripts.join(file), "fixture").unwrap();
+    }
+    let workspace = root.path().join("workspace");
+    let dmg = root.path().join("source.dmg");
+    fs::write(&dmg, "fixture").unwrap();
+    let node = write_syntax_rejecting_node_fixture(root.path());
+    let builder = NodeBuilder::new(root.path().to_path_buf(), node);
+
+    let result = builder.build(BuildRequest {
+        candidate_id: "candidate-invalid-syntax".into(),
+        version: "0.139.0".into(),
+        dmg_path: dmg,
+        workspace: workspace.clone(),
+        downloads: root.path().join("downloads"),
+        format: PackageFormat::Deb,
+        environment: vec![
+            (
+                "FACTORY_FIXTURE_APP".into(),
+                workspace.join("build").join("app").into_os_string(),
+            ),
+            (
+                "FACTORY_FIXTURE_PACKAGE".into(),
+                workspace
+                    .join("artifacts")
+                    .join("invalid.deb")
+                    .into_os_string(),
+            ),
+        ],
+    });
+
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("JavaScript syntax validation failed"));
     assert!(!workspace.exists());
 }

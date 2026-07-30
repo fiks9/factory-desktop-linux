@@ -5,6 +5,9 @@
 - Version mismatch: compare endpoint, redirect, plist, and requested `VERSION`;
   never override a mismatch.
 - Patch failure: follow [patch drift](patch-drift.md); packaging must not run.
+- JavaScript syntax failure: inspect the bounded `bundle-javascript-syntax`
+  outcome and excerpt. Do not bypass it based on marker counts or snippet-only
+  parsing.
 - Hygiene failure: fix the exact reported path/mode/link and rebuild isolated
   dependencies with `npm ci --omit=dev --ignore-scripts`.
 - AppImage tool failure: inspect `.cache/appimage`, rerun, and never commit it.

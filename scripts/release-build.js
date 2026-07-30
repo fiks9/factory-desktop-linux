@@ -19,6 +19,7 @@ const {
 } = require("./release-metadata");
 const { acquireCachedOfficialDmg, writeVersionIndex } = require("./upstream-watch");
 const { writePatchDriftArtifacts } = require("./patch-diagnostics");
+const { releaseIdentity } = require("./release-identity");
 
 function requireEmptyOutput(directory) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o755 });
@@ -36,6 +37,7 @@ function acceptanceSummary(source, patchReport, artifacts) {
     schemaVersion: 1,
     verdict: "accepted",
     factoryVersion: source.factoryVersion,
+    wrapperRevision: source.wrapperRevision ?? null,
     sourceDmgSha256: source.dmgSha256,
     rawAsarSha256: source.rawAsarSha256,
     patchedAsarSha256: source.patchedAsarSha256,
@@ -49,12 +51,16 @@ function acceptanceSummary(source, patchReport, artifacts) {
       format: artifact.inspection.format,
       inspected: true,
       packageSha256: artifact.inspection.packageSha256,
+      packageVersion: artifact.inspection.packageVersion,
+      packageRelease: artifact.inspection.packageRelease,
     })).sort((left, right) => left.format.localeCompare(right.format)),
   };
 }
 
 async function buildRelease(options) {
-  const version = parseVersion(options.version);
+  if (!options.wrapperRevision) throw new Error("Release build requires an explicit wrapper revision");
+  const identity = releaseIdentity(options.factoryVersion ?? options.version, options.wrapperRevision);
+  const version = parseVersion(identity.factoryVersion);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-release-build-"));
   const outputDir = path.resolve(options.outputDir);
   requireEmptyOutput(outputDir);
@@ -66,6 +72,7 @@ async function buildRelease(options) {
       built = await buildApp({
         acquiredDmg,
         version,
+        wrapperRevision: identity.wrapperRevision,
         workDir: path.join(root, "work"),
         cacheDir,
         electronCacheDir: path.resolve(options.electronCacheDir || path.join(process.cwd(), ".cache", "electron")),
@@ -85,11 +92,12 @@ async function buildRelease(options) {
     writeVersionIndex(cacheDir, version, acquiredDmg.sha256);
     const temporaryDist = path.join(root, "dist");
     const packageResults = [
-      buildDeb({ appDir: built.appDir, version, outputDir: temporaryDist }),
-      buildRpm({ appDir: built.appDir, version, outputDir: temporaryDist }),
+      buildDeb({ appDir: built.appDir, version, wrapperRevision: identity.wrapperRevision, outputDir: temporaryDist }),
+      buildRpm({ appDir: built.appDir, version, wrapperRevision: identity.wrapperRevision, outputDir: temporaryDist }),
       await buildAppImage({
         appDir: built.appDir,
         version,
+        wrapperRevision: identity.wrapperRevision,
         outputDir: temporaryDist,
         cacheDir: path.resolve(options.appImageCacheDir || path.join(process.cwd(), ".cache", "appimage")),
       }),
@@ -97,6 +105,7 @@ async function buildRelease(options) {
     const artifacts = packageResults.map((artifact) => ({ ...artifact, inspection: inspectPackage(artifact.path) }));
     const source = JSON.parse(fs.readFileSync(path.join(built.appDir, "build-info.json"), "utf8"));
     validateBuildInfo(source, { requirePackage: false });
+    if (source.wrapperRevision !== identity.wrapperRevision) throw new Error("Release source wrapper revision mismatch");
     const manifest = createReleaseManifest(source, artifacts);
     validateReleaseManifest(manifest);
 
@@ -125,6 +134,7 @@ async function buildRelease(options) {
     writeChecksums(checksumsPath, releaseFiles);
     verifyReleaseBundle(outputDir, {
       factoryVersion: source.factoryVersion,
+      wrapperRevision: identity.wrapperRevision,
       repositoryCommit: source.repositoryCommit,
     });
     return { outputDir, artifacts, manifest, summary, checksumsPath };
@@ -139,13 +149,14 @@ if (require.main === module) {
     const index = args.indexOf(name);
     return index >= 0 ? args[index + 1] : undefined;
   };
-  const version = value("--version");
+  const factoryVersion = value("--factory-version");
+  const wrapperRevision = value("--wrapper-revision");
   const outputDir = value("--output-dir");
-  if (!version || !outputDir) {
-    console.error("Usage: node scripts/release-build.js --version 0.140.0 --output-dir /absolute/output");
+  if (!factoryVersion || !wrapperRevision || !outputDir) {
+    console.error("Usage: node scripts/release-build.js --factory-version 0.139.0 --wrapper-revision linux.1 --output-dir /absolute/output");
     process.exit(2);
   }
-  buildRelease({ version, outputDir, cacheDir: value("--cache-dir") })
+  buildRelease({ factoryVersion, wrapperRevision, outputDir, cacheDir: value("--cache-dir") })
     .then((result) => console.log(JSON.stringify({ verdict: "accepted", outputDir: result.outputDir }, null, 2)))
     .catch((error) => { console.error(`Release build failed: ${error.message}`); process.exit(1); });
 }

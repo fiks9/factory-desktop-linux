@@ -59,6 +59,7 @@ function validateAutoUpdater(files) {
 function validateNativeUpdater(files) {
   const all = files.map((file) => file.content).join("\n");
   const marker = "/* factory-linux:linux-native-updater-button */";
+  const markerCount = (all.match(/\/\* factory-linux:linux-native-updater-button \*\//g) || []).length;
   const bridgeLoads = (all.match(/require\("\/usr\/lib\/factory-desktop\/update-bridge\.cjs"\)/g) || []).length;
   const handlers = Object.fromEntries(["getState", "install", "checkNow"].map((action) => [
     action,
@@ -70,15 +71,20 @@ function validateNativeUpdater(files) {
   });
   const appImageFallback = all.includes('FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"')
     && all.includes('linuxState:"update-manager-unavailable"');
-  const validationPassed = (all.match(/\/\* factory-linux:linux-native-updater-button \*\//g) || []).length === 1
+  const expressionIife = all.includes(`${marker}(()=>{const factoryLinuxUpdateBridge=`)
+    && /factoryLinuxUpdateBridge\.dispatch\("checkNow",\{\}\)\)\}\)\(\)/.test(all);
+  const handlerCount = Object.values(handlers).reduce((sum, count) => sum + count, 0);
+  const validationPassed = markerCount === 1
     && bridgeLoads === 1
     && Object.values(handlers).every((count) => count === 1)
+    && handlerCount === 3
     && !oldHandlers
     && appImageFallback
+    && expressionIife
     && !all.includes("FACTORY_UPDATE_MANAGER_PATH");
   return {
     validationPassed,
-    evidence: { marker: contextHas(all, marker), bridgeLoads, handlers, oldHandlers, appImageFallback, fixedPath: !all.includes("FACTORY_UPDATE_MANAGER_PATH") },
+    evidence: { marker: contextHas(all, marker), markerCount, bridgeLoads, handlers, handlerCount, oldHandlers, appImageFallback, expressionIife, fixedPath: !all.includes("FACTORY_UPDATE_MANAGER_PATH") },
     errors: validationPassed ? [] : ["Linux native updater bridge or required IPC handler contract was not validated."],
   };
 }

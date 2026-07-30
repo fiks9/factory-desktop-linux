@@ -3,8 +3,12 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
+      factory_version:
         description: Exact Factory version (for example 0.140.0)
+        required: true
+        type: string
+      wrapper_revision:
+        description: Explicit Linux wrapper revision (for example linux.1)
         required: true
         type: string
       source_ref:
@@ -17,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: factory-release-${{ inputs.version }}
+  group: factory-release-${{ inputs.factory_version }}-${{ inputs.wrapper_revision }}
   cancel-in-progress: false
 
 jobs:
@@ -29,7 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      FACTORY_RELEASE_VERSION: ${{ inputs.version }}
+      FACTORY_RELEASE_VERSION: ${{ inputs.factory_version }}
+      FACTORY_WRAPPER_REVISION: ${{ inputs.wrapper_revision }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,8 +58,8 @@ jobs:
             exit 1
           }
           printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
-      - name: Validate exact version input
-        run: node -e "require('./scripts/dmg').parseVersion(process.argv[1])" "$FACTORY_RELEASE_VERSION"
+      - name: Validate exact release identity
+        run: node -e "require('./scripts/release-identity').releaseIdentity(process.argv[1],process.argv[2])" "$FACTORY_RELEASE_VERSION" "$FACTORY_WRAPPER_REVISION"
       - name: Install package tools
         run: |
           sudo apt-get update
@@ -65,14 +70,14 @@ jobs:
           make check
           make test
       - name: Run synthetic package acceptance
-        run: make package-smoke "VERSION=$FACTORY_RELEASE_VERSION" "DIST_DIR=$RUNNER_TEMP/synthetic-smoke"
+        run: make package-smoke "VERSION=$FACTORY_RELEASE_VERSION" "WRAPPER_REVISION=$FACTORY_WRAPPER_REVISION" "DIST_DIR=$RUNNER_TEMP/synthetic-smoke"
       - uses: actions/cache@v4
         with:
           path: |
             .cache/release-downloads
             .cache/electron
             .cache/appimage
-          key: factory-release-${{ runner.os }}-${{ inputs.version }}
+          key: factory-release-${{ runner.os }}-${{ inputs.factory_version }}-${{ inputs.wrapper_revision }}
           restore-keys: |
             factory-release-${{ runner.os }}-
       - name: Build and inspect exact upstream release
@@ -83,7 +88,8 @@ jobs:
         run: |
           test -z "$(git status --porcelain=v1)"
           node scripts/release-build.js \
-            --version "$FACTORY_RELEASE_VERSION" \
+            --factory-version "$FACTORY_RELEASE_VERSION" \
+            --wrapper-revision "$FACTORY_WRAPPER_REVISION" \
             --cache-dir "$PWD/.cache/release-downloads" \
             --output-dir "$RUNNER_TEMP/release-assets"
           test -z "$(git status --porcelain=v1)"
@@ -91,7 +97,7 @@ jobs:
         if: always() && steps.release-build.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}
+          name: release-diagnostics-${{ inputs.factory_version }}-${{ inputs.wrapper_revision }}-${{ github.run_id }}
           path: ${{ runner.temp }}/release-assets/diagnostics/
           if-no-files-found: ignore
           retention-days: 14
@@ -117,6 +123,7 @@ jobs:
           const root = process.env.RUNNER_TEMP + '/release-assets';
           metadata.verifyReleaseBundle(root, {
             factoryVersion: process.env.FACTORY_RELEASE_VERSION,
+            wrapperRevision: process.env.FACTORY_WRAPPER_REVISION,
             repositoryCommit: process.env.FACTORY_SOURCE_COMMIT,
           });
           NODE
@@ -124,7 +131,7 @@ jobs:
         if: steps.release-build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: factory-release-${{ inputs.version }}-${{ github.run_id }}
+          name: factory-release-${{ inputs.factory_version }}-${{ inputs.wrapper_revision }}-${{ github.run_id }}
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
           retention-days: 7
@@ -136,7 +143,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      FACTORY_RELEASE_VERSION: ${{ inputs.version }}
+      FACTORY_RELEASE_VERSION: ${{ inputs.factory_version }}
+      FACTORY_WRAPPER_REVISION: ${{ inputs.wrapper_revision }}
       FACTORY_SOURCE_COMMIT: ${{ needs['build-and-accept'].outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +153,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: factory-release-${{ inputs.version }}-${{ github.run_id }}
+          name: factory-release-${{ inputs.factory_version }}-${{ inputs.wrapper_revision }}-${{ github.run_id }}
           path: release-assets
       - name: Reverify accepted bundle
         run: |
@@ -155,6 +163,7 @@ jobs:
           const root = path.resolve('release-assets');
           metadata.verifyReleaseBundle(root, {
             factoryVersion: process.env.FACTORY_RELEASE_VERSION,
+            wrapperRevision: process.env.FACTORY_WRAPPER_REVISION,
             repositoryCommit: process.env.FACTORY_SOURCE_COMMIT,
           });
           NODE
@@ -175,13 +184,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          RELEASE_TAG=$(node -e "process.stdout.write(require('./scripts/release-identity').releaseIdentity(process.env.FACTORY_RELEASE_VERSION,process.env.FACTORY_WRAPPER_REVISION).tag)")
           notes=$(mktemp)
           {
             printf 'Unofficial Factory Desktop Linux build for Factory %s.\n\n' "$FACTORY_RELEASE_VERSION"
+            printf 'Linux wrapper revision: %s.\n\n' "$FACTORY_WRAPPER_REVISION"
             printf 'Acceptance metadata and checksum verification are included in the release assets.\n'
             printf 'This release is checksum-only unless detached .asc files are present.\n'
           } > "$notes"
-          gh release create "v$FACTORY_RELEASE_VERSION" release-assets/* \
+          gh release create "$RELEASE_TAG" release-assets/* \
             --target "$FACTORY_SOURCE_COMMIT" \
-            --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION" \
+            --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION ($FACTORY_WRAPPER_REVISION)" \
             --notes-file "$notes"

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { sha256File, listJavaScriptFiles, readFile, replaceFilesAtomic } = require("./asar-io");
 const { assertDescriptor, CRITICAL_POLICY } = require("./contract");
+const { validateJavaScriptFiles } = require("./javascript-syntax");
 const patches = require("./patches");
 const validators = require("./validators");
 
@@ -33,6 +34,26 @@ function packagingOutcomes(projectRoot) {
 function runtimeOutcomes(files) {
   const result = validators.validatePackagedDaemonMode(files);
   return [{ id: "packaged-daemon-mode", description: "Prove packaged daemon paths exclude development arguments", phase: "post-patch-validation", ciPolicy: CRITICAL_POLICY, matchStrategy: "app.isPackaged daemon branch validator", matched: true, patched: false, alreadyPatched: true, validationPassed: result.validationPassed, errors: result.errors, evidence: result.evidence }];
+}
+
+function syntaxOutcome(files, originalContents) {
+  const changedPaths = new Set(files
+    .filter((file) => file.content !== originalContents.get(file.path))
+    .map((file) => file.path));
+  const validation = validateJavaScriptFiles(files, { changedPaths });
+  return {
+    id: "bundle-javascript-syntax",
+    description: "Parse changed and Factory-marker-bearing JavaScript bundles",
+    phase: "post-patch-validation",
+    ciPolicy: CRITICAL_POLICY,
+    matchStrategy: "node:vm complete CommonJS script parse",
+    matched: validation.evidence.checkedFiles > 0,
+    patched: false,
+    alreadyPatched: true,
+    validationPassed: validation.validationPassed,
+    errors: validation.errors,
+    evidence: validation.evidence,
+  };
 }
 
 function makeFiles(asarPath) {
@@ -79,6 +100,20 @@ function diagnosticExcerpts(files, patchId) {
         text: file.content.slice(start, start + 1024),
       });
       if (excerpts.length >= 3) return excerpts;
+    }
+  }
+  if (patchId === "bundle-javascript-syntax") {
+    for (const file of files) {
+      const index = file.content.indexOf("factory-linux:");
+      if (index < 0) continue;
+      const start = Math.max(0, index - 384);
+      excerpts.push({
+        patchId,
+        file: file.path,
+        anchor: "factory-linux:",
+        text: file.content.slice(start, start + 1024),
+      });
+      if (excerpts.length >= 3) break;
     }
   }
   return excerpts;
@@ -131,6 +166,16 @@ async function patchAsar(options) {
       writeReport(options.reportPath, error.report);
       throw error;
     }
+  }
+
+  const syntax = syntaxOutcome(workingFiles, originalContents);
+  outcomes.push(syntax);
+  if (!syntax.validationPassed) {
+    const error = new Error(`Required patch failed: ${syntax.id}`);
+    error.report = { schemaVersion: 1, asarPath: path.basename(asarPath), originalHash, finalHash: originalHash, changed: false, outcomes };
+    error.excerpts = diagnosticExcerpts(workingFiles, syntax.id);
+    writeReport(options.reportPath, error.report);
+    throw error;
   }
 
   const changed = outcomes.some((outcome) => outcome.patched);

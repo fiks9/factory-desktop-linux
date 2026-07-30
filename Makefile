@@ -10,11 +10,18 @@ test:
 
 test-real-bundles: updater
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@TMP_ROOT=$$(mktemp -d -t factory-real-harness-XXXXXX); trap 'rm -rf "$$TMP_ROOT"' EXIT; FACTORY_TEST_TMP_ROOT="$$TMP_ROOT" node tests/bundle-regression/run-local.js
+	@if [[ -n "$$FACTORY_TEST_TMP_ROOT" ]]; then \
+		mkdir -p "$$FACTORY_TEST_TMP_ROOT"; \
+		node tests/bundle-regression/run-local.js; \
+	else \
+		TMP_ROOT=$$(mktemp -d -t factory-real-harness-XXXXXX); \
+		trap 'rm -rf "$$TMP_ROOT"' EXIT; \
+		FACTORY_TEST_TMP_ROOT="$$TMP_ROOT" node tests/bundle-regression/run-local.js; \
+	fi
 
 package-smoke: updater
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@node scripts/package-smoke.js "$(DIST_DIR)" "$(or $(VERSION),0.139.0)"
+	@node scripts/package-smoke.js "$(DIST_DIR)" "$(or $(VERSION),0.139.0)" "$(WRAPPER_REVISION)"
 
 release-check:
 	@node scripts/release-check.js

@@ -31,15 +31,8 @@ jobs:
           npm ci --prefix patcher --ignore-scripts
       - name: Resolve accepted version
         id: accepted
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           accepted=$(node -p "require('./release/accepted-upstream.json').acceptedVersion")
-          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
-          candidate=${tag#v}
-          if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-            accepted=$(node -e "const {compareVersions}=require('./scripts/upstream-watch');process.stdout.write(compareVersions(process.argv[1],process.argv[2])>0?process.argv[1]:process.argv[2])" "$candidate" "$accepted")
-          fi
           printf 'version=%s\n' "$accepted" >> "$GITHUB_OUTPUT"
       - name: Restore content-addressed DMG cache
         id: upstream-cache

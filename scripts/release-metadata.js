@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { sha256File } = require("./dmg");
+const { releaseIdentity } = require("./release-identity");
 
 const FORMATS = new Set(["deb", "rpm", "appimage"]);
 const SOURCE_FIELDS = [
@@ -49,6 +50,8 @@ function validateBuildInfo(info, options = {}) {
     if (typeof info[field] !== "string" || !info[field]) throw new Error(`build-info ${field} is missing`);
   }
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(info.factoryVersion)) throw new Error("build-info Factory version is invalid");
+  const identity = releaseIdentity(info.factoryVersion, info.wrapperRevision ?? null);
+  if ((info.wrapperRevision ?? null) !== identity.wrapperRevision) throw new Error("build-info wrapper revision is invalid");
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(info.electronVersion)) throw new Error("build-info Electron version is invalid");
   for (const field of ["dmgSha256", "rawAsarSha256", "patchedAsarSha256", "patchReportSha256"]) assertDigest(info[field], field);
   if (info.binaryName !== "factory-desktop") throw new Error("build-info binary name is invalid");
@@ -63,6 +66,10 @@ function validateBuildInfo(info, options = {}) {
     if (!FORMATS.has(info.packageFormat)) throw new Error("build-info package format is invalid");
     const expectedNative = info.packageFormat !== "appimage";
     if (info.nativePackage !== expectedNative) throw new Error("build-info native package identity is invalid");
+    const expectedPackage = packageIdentityFields(identity, info.packageFormat);
+    for (const field of ["packageVersion", "packageRelease", "artifactFilename"]) {
+      if ((info[field] ?? null) !== expectedPackage[field]) throw new Error(`build-info ${field} is invalid`);
+    }
   }
   if (options.expectedFormat && info.packageFormat !== options.expectedFormat) {
     throw new Error(`build-info format mismatch: expected ${options.expectedFormat}, got ${info.packageFormat}`);
@@ -70,18 +77,51 @@ function validateBuildInfo(info, options = {}) {
   return info;
 }
 
-function withPackageIdentity(sourceInfo, format) {
+function packageIdentityFields(identity, format) {
+  if (format === "deb") {
+    return {
+      packageVersion: identity.debVersion,
+      packageRelease: identity.wrapperRevision?.slice("linux.".length) ?? null,
+      artifactFilename: identity.debFilename,
+    };
+  }
+  if (format === "rpm") {
+    return {
+      packageVersion: identity.rpmVersion,
+      packageRelease: identity.rpmRelease,
+      artifactFilename: identity.rpmFilename,
+    };
+  }
+  return {
+    packageVersion: identity.appImageVersion,
+    packageRelease: identity.wrapperRevision,
+    artifactFilename: identity.appImageFilename,
+  };
+}
+
+function withPackageIdentity(sourceInfo, format, options = {}) {
   validateBuildInfo(sourceInfo, { requirePackage: false });
   if (!FORMATS.has(format)) throw new Error(`Unsupported package format: ${format}`);
-  const result = { ...sourceInfo, packageFormat: format, nativePackage: format !== "appimage" };
+  const wrapperRevision = options.wrapperRevision ?? sourceInfo.wrapperRevision ?? null;
+  if (sourceInfo.wrapperRevision !== undefined && (sourceInfo.wrapperRevision ?? null) !== wrapperRevision) {
+    throw new Error("Package wrapper revision does not match source provenance");
+  }
+  const identity = releaseIdentity(sourceInfo.factoryVersion, wrapperRevision);
+  const result = {
+    ...sourceInfo,
+    wrapperRevision: identity.wrapperRevision,
+    packageFormat: format,
+    nativePackage: format !== "appimage",
+    ...packageIdentityFields(identity, format),
+  };
   validateBuildInfo(result, { expectedFormat: format });
   return result;
 }
 
-function writePackageBuildInfo(appDir, format) {
+function writePackageBuildInfo(appDir, format, options = {}) {
   const file = path.join(appDir, "build-info.json");
   const source = JSON.parse(fs.readFileSync(file, "utf8"));
-  const result = withPackageIdentity(source, format);
+  const result = withPackageIdentity(source, format, options);
   fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o644 });
   return result;
 }
@@ -132,6 +172,14 @@ function createReleaseManifest(sourceInfo, artifacts) {
       throw new Error("Package inspection identity does not match source provenance");
     }
     validateBuildInfo(inspection.buildInfo, { expectedFormat: inspection.format });
+    const expectedPackage = withPackageIdentity(sourceInfo, inspection.format);
+    if (inspection.buildInfo.packageVersion !== expectedPackage.packageVersion
+      || inspection.buildInfo.packageRelease !== expectedPackage.packageRelease
+      || inspection.buildInfo.artifactFilename !== expectedPackage.artifactFilename
+      || (inspection.packageVersion ?? inspection.buildInfo.packageVersion) !== expectedPackage.packageVersion
+      || (inspection.packageRelease ?? inspection.buildInfo.packageRelease) !== expectedPackage.packageRelease) {
+      throw new Error(`Package ${inspection.format} identity does not match source provenance`);
+    }
     for (const [field, expected] of Object.entries(sourceInfo)) {
       if (JSON.stringify(inspection.buildInfo[field]) !== JSON.stringify(expected)) {
         throw new Error(`Package ${inspection.format} embedded provenance mismatch for ${field}`);
@@ -141,6 +189,8 @@ function createReleaseManifest(sourceInfo, artifacts) {
       filename: path.basename(artifactPath),
       format: inspection.format,
       nativePackage: inspection.format !== "appimage",
+      packageVersion: expectedPackage.packageVersion,
+      packageRelease: expectedPackage.packageRelease,
       sha256: sha256File(artifactPath),
       bytes: fs.statSync(artifactPath).size,
     };
@@ -162,6 +212,11 @@ function validateReleaseManifest(manifest) {
     assertDigest(entry.sha256, `${entry.format} package`);
     if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0) throw new Error("Release package size is invalid");
     if (entry.nativePackage !== (entry.format !== "appimage")) throw new Error("Release native package identity is invalid");
+    const expected = withPackageIdentity(manifest, entry.format);
+    if (entry.filename !== expected.artifactFilename) throw new Error(`Release ${entry.format} filename is invalid`);
+    if (entry.packageVersion !== expected.packageVersion || entry.packageRelease !== expected.packageRelease) {
+      throw new Error(`Release ${entry.format} package version/release identity is invalid`);
+    }
   }
   return manifest;
 }
@@ -171,14 +226,14 @@ function validateReleaseContext(manifest, expected) {
   if (manifest.factoryVersion !== expected.factoryVersion) {
     throw new Error(`Release Factory version mismatch: expected ${expected.factoryVersion}, got ${manifest.factoryVersion}`);
   }
+  const expectedIdentity = releaseIdentity(expected.factoryVersion, expected.wrapperRevision ?? null);
+  if ((manifest.wrapperRevision ?? null) !== expectedIdentity.wrapperRevision) {
+    throw new Error(`Release wrapper revision mismatch: expected ${expectedIdentity.wrapperRevision}, got ${manifest.wrapperRevision}`);
+  }
   if (manifest.repositoryCommit !== expected.repositoryCommit) {
     throw new Error(`Release repository commit mismatch: expected ${expected.repositoryCommit}, got ${manifest.repositoryCommit}`);
   }
-  const expectedNames = {
-    appimage: `Factory-${expected.factoryVersion}-x86_64.AppImage`,
-    deb: `factory-desktop_${expected.factoryVersion}_amd64.deb`,
-    rpm: `factory-desktop-${expected.factoryVersion}-1.x86_64.rpm`,
-  };
+  const expectedNames = { appimage: expectedIdentity.appImageFilename, deb: expectedIdentity.debFilename, rpm: expectedIdentity.rpmFilename };
   for (const entry of manifest.packages) {
     if (entry.filename !== expectedNames[entry.format]) {
       throw new Error(`Release ${entry.format} filename mismatch: expected ${expectedNames[entry.format]}, got ${entry.filename}`);
@@ -241,6 +296,7 @@ function verifyReleaseBundle(directory, expected) {
     electronVersion: manifest.electronVersion,
     buildTimestamp: manifest.buildTimestamp,
   };
+  if (Object.prototype.hasOwnProperty.call(manifest, "wrapperRevision")) summaryFields.wrapperRevision = manifest.wrapperRevision;
   if (summary.schemaVersion !== 1 || summary.verdict !== "accepted") throw new Error("Release acceptance summary verdict is invalid");
   for (const [field, value] of Object.entries(summaryFields)) {
     if (summary[field] !== value) throw new Error(`Release acceptance summary mismatch for ${field}`);
@@ -265,6 +321,9 @@ function verifyReleaseBundle(directory, expected) {
     const accepted = summaryPackages.get(entry.format);
     if (!accepted || accepted.filename !== entry.filename || accepted.packageSha256 !== entry.sha256 || accepted.inspected !== true) {
       throw new Error(`Release acceptance summary package mismatch for ${entry.format}`);
+    }
+    if (accepted.packageVersion !== entry.packageVersion || accepted.packageRelease !== entry.packageRelease) {
+      throw new Error(`Release acceptance summary package identity mismatch for ${entry.format}`);
     }
   }
   return { manifest, report, summary };

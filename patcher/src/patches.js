@@ -145,6 +145,22 @@ function ipcHandlers(files, channel) {
   return matches;
 }
 
+function contiguousHandlerSpan(handlers, content) {
+  const ordered = [...handlers].sort((left, right) => left.start - right.start);
+  const separators = [];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const gap = content.slice(ordered[index - 1].end, ordered[index].start);
+    if (!/^[,;\s]*$/.test(gap)) return null;
+    separators.push(gap);
+  }
+  return {
+    start: ordered[0].start,
+    end: ordered[ordered.length - 1].end,
+    ordered,
+    separators,
+  };
+}
+
 function nativeUpdater(files) {
   const id = "linux-native-updater-button";
   const marker = MARKER(id);
@@ -167,21 +183,27 @@ function nativeUpdater(files) {
     return result(id, false, false, false, [], { error: "update IPC handlers do not share one Electron contract" });
   }
   const bridgeName = "factoryLinuxUpdateBridge";
-  const replacements = found
+  const handlers = found
     .map((entry) => ({ ...entry.matches[0], action: entry.action }))
-    .sort((left, right) => right.start - left.start);
-  let content = target.content;
-  for (const handler of replacements) {
-    const replacement = `${alias}.ipcMain.handle("updates:${handler.action}",()=>${bridgeName}.dispatch("${handler.action}",{}))`;
-    content = `${content.slice(0, handler.start)}${replacement}${content.slice(handler.end)}`;
+    .sort((left, right) => left.start - right.start);
+  const span = contiguousHandlerSpan(handlers, target.content);
+  if (!span) {
+    return result(id, false, false, false, [], {
+      matcher: "contiguous-ipc-handler-span",
+      error: "update IPC handlers are not one separator-only span",
+    });
   }
-  const insertion = Math.min(...replacements.map((handler) => handler.start));
-  const loader = `${marker}const ${bridgeName}=process.env.FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"?{dispatch:async()=>{const state={schemaVersion:1,kind:"error",linuxState:"update-manager-unavailable",message:"Native updates are unavailable in AppImage"};for(const window of ${alias}.BrowserWindow.getAllWindows())window.isDestroyed()||window.webContents.send("updates:state",state);return state}}:require("/usr/lib/factory-desktop/update-bridge.cjs").createBridge({electron:${alias}});`;
-  content = `${content.slice(0, insertion)}${loader}${content.slice(insertion)}`;
+  const appImageFallback = `{dispatch:async()=>{const state={schemaVersion:1,kind:"error",linuxState:"update-manager-unavailable",message:"Native updates are unavailable in AppImage"};for(const window of ${alias}.BrowserWindow.getAllWindows())window.isDestroyed()||window.webContents.send("updates:state",state);return state}}`;
+  const replacement = `${marker}(()=>{const ${bridgeName}=process.env.FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"?${appImageFallback}:require("/usr/lib/factory-desktop/update-bridge.cjs").createBridge({electron:${alias}});${span.ordered.map((handler) => `${alias}.ipcMain.handle("updates:${handler.action}",()=>${bridgeName}.dispatch("${handler.action}",{}))`).join(";")}})()`;
+  const content = `${target.content.slice(0, span.start)}${replacement}${target.content.slice(span.end)}`;
   return result(id, true, true, false, [[target.path, content]], {
     file: target.path,
     bridge: "/usr/lib/factory-desktop/update-bridge.cjs",
     handlers: channels.map(([channel]) => channel),
+    handlerCount: span.ordered.length,
+    matcher: "contiguous-ipc-handler-span",
+    insertionContext: "expression-iife",
+    separators: span.separators,
   });
 }
 

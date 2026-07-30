@@ -46,6 +46,7 @@ async function buildApp(options = {}) {
     dmgFile: path.basename(dmg.path),
     dmgSha256: dmg.sha256,
     factoryVersion: extracted.version,
+    wrapperRevision: options.wrapperRevision ?? null,
     electronVersion: extracted.electronVersion,
     binaryName: runtime.binaryName,
     launcherName: runtime.launcherName,
@@ -72,7 +73,7 @@ async function buildApp(options = {}) {
 if (require.main === module) {
   const args = process.argv.slice(2);
   const get = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-  buildApp({ dmg: get("--dmg"), version: get("--version"), root: get("--root"), workDir: get("--work-dir"), cacheDir: get("--cache-dir"), electronCacheDir: get("--electron-cache-dir") }).then((result) => console.log(JSON.stringify(result, null, 2))).catch((error) => { console.error(`Build failed: ${error.message}`); process.exit(1); });
+  buildApp({ dmg: get("--dmg"), version: get("--version"), wrapperRevision: get("--wrapper-revision"), root: get("--root"), workDir: get("--work-dir"), cacheDir: get("--cache-dir"), electronCacheDir: get("--electron-cache-dir") }).then((result) => console.log(JSON.stringify(result, null, 2))).catch((error) => { console.error(`Build failed: ${error.message}`); process.exit(1); });
 }
 
 module.exports = { buildApp };

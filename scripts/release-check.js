@@ -39,9 +39,23 @@ function verifySyntheticReleaseBundle(dist) {
   const artifacts = packageFiles.map((artifactPath) => ({ path: artifactPath, inspection: inspectPackage(artifactPath) }));
   const first = artifacts[0]?.inspection;
   if (!first) throw new Error("Synthetic release gate produced no packages");
-  const { packageFormat: _packageFormat, nativePackage: _nativePackage, ...source } = first.buildInfo;
+  const {
+    packageFormat: _packageFormat,
+    nativePackage: _nativePackage,
+    packageVersion: _packageVersion,
+    packageRelease: _packageRelease,
+    artifactFilename: _artifactFilename,
+    ...source
+  } = first.buildInfo;
   for (const artifact of artifacts) {
-    const { packageFormat, nativePackage, ...candidateSource } = artifact.inspection.buildInfo;
+    const {
+      packageFormat,
+      nativePackage,
+      packageVersion: _candidatePackageVersion,
+      packageRelease: _candidatePackageRelease,
+      artifactFilename: _candidateArtifactFilename,
+      ...candidateSource
+    } = artifact.inspection.buildInfo;
     if (JSON.stringify(candidateSource) !== JSON.stringify(source)) throw new Error("Package source provenance differs across formats");
     if (packageFormat !== artifact.inspection.format || nativePackage !== (packageFormat !== "appimage")) {
       throw new Error("Package-specific provenance does not match inspection");
@@ -63,6 +77,7 @@ function verifySyntheticReleaseBundle(dist) {
   writeChecksums(checksums, [...packageFiles, ...metadataFiles]);
   verifyReleaseBundle(dist, {
     factoryVersion: source.factoryVersion,
+    wrapperRevision: source.wrapperRevision,
     repositoryCommit: source.repositoryCommit,
   });
 }
@@ -72,7 +87,11 @@ function main() {
   if (process.env.FACTORY_REQUIRE_CLEAN_GIT === "1" && before) throw new Error("Release checkout is not clean");
   assertNoTrackedGeneratedArtifacts();
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "factory-release-check-"));
-  const env = { ...process.env, TMPDIR: temporary };
+  const env = {
+    ...process.env,
+    TMPDIR: temporary,
+    FACTORY_TEST_TMP_ROOT: path.join(temporary, "real-harness"),
+  };
   try {
     runMake(["check"], env);
     runMake(["test"], env);

@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const { test } = require("node:test");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -39,6 +40,38 @@ function sourceInfo() {
     targetArchitecture: "x86_64",
   };
 }
+
+test("corrected wrapper identity is strict and package versions compare newer", () => {
+  const { releaseIdentity } = require("../scripts/release-identity");
+  const identity = releaseIdentity("0.139.0", "linux.1");
+  assert.deepEqual(identity, {
+    factoryVersion: "0.139.0",
+    wrapperRevision: "linux.1",
+    tag: "v0.139.0-linux.1",
+    debVersion: "0.139.0-1",
+    rpmVersion: "0.139.0",
+    rpmRelease: "2",
+    appImageVersion: "0.139.0-linux.1",
+    appImageFilename: "Factory-0.139.0-linux.1-x86_64.AppImage",
+    debFilename: "factory-desktop_0.139.0-1_amd64.deb",
+    rpmFilename: "factory-desktop-0.139.0-2.x86_64.rpm",
+  });
+  execFileSync("dpkg", ["--compare-versions", identity.debVersion, "gt", "0.139.0"]);
+  const rpmOrdering = execFileSync("rpm", [
+    "--eval",
+    '%{lua:print(rpm.vercmp("0.139.0-2", "0.139.0-1"))}',
+  ], { encoding: "utf8" }).trim();
+  assert.equal(rpmOrdering, "1");
+  for (const [factoryVersion, wrapperRevision] of [
+    ["0.139.0-linux.1", "linux.1"],
+    ["0.139.0", "linux.0"],
+    ["0.139.0", "linux.01"],
+    ["0.139.0", "linux.1/../../release"],
+    ["0.139.0", "linux.1;touch-owned"],
+  ]) {
+    assert.throws(() => releaseIdentity(factoryVersion, wrapperRevision), /Factory version|wrapper revision/);
+  }
+});
 
 test("upstream comparison accepts strict versions and only reports newer releases", () => {
   const { classifyVersion } = require("../scripts/upstream-watch");
@@ -152,6 +185,23 @@ test("source and package provenance are strict and format-bound", () => {
   assert.doesNotThrow(() => validateBuildInfo(deb, { expectedFormat: "deb" }));
   assert.throws(() => validateBuildInfo(deb, { expectedFormat: "rpm" }), /format/);
   assert.throws(() => validateBuildInfo({ ...source, dmgSha256: "not-a-hash" }, { requirePackage: false }), /SHA-256/);
+
+  const correctedSource = { ...source, factoryVersion: "0.139.0", wrapperRevision: "linux.1" };
+  const correctedDeb = withPackageIdentity(correctedSource, "deb");
+  const correctedRpm = withPackageIdentity(correctedSource, "rpm");
+  const correctedAppImage = withPackageIdentity(correctedSource, "appimage");
+  assert.deepEqual(
+    [correctedDeb.packageVersion, correctedDeb.packageRelease, correctedDeb.artifactFilename],
+    ["0.139.0-1", "1", "factory-desktop_0.139.0-1_amd64.deb"],
+  );
+  assert.deepEqual(
+    [correctedRpm.packageVersion, correctedRpm.packageRelease, correctedRpm.artifactFilename],
+    ["0.139.0", "2", "factory-desktop-0.139.0-2.x86_64.rpm"],
+  );
+  assert.deepEqual(
+    [correctedAppImage.packageVersion, correctedAppImage.packageRelease, correctedAppImage.artifactFilename],
+    ["0.139.0-linux.1", "linux.1", "Factory-0.139.0-linux.1-x86_64.AppImage"],
+  );
 });
 
 test("checksums cover exact release filenames and reject aliases or drift", () => {
@@ -173,15 +223,23 @@ test("checksums cover exact release filenames and reject aliases or drift", () =
 });
 
 test("release manifest binds all inspected package formats to source provenance", () => {
-  const { createReleaseManifest, validateReleaseContext, validateReleaseManifest } = require("../scripts/release-metadata");
+  const { createReleaseManifest, validateReleaseContext, validateReleaseManifest, withPackageIdentity } = require("../scripts/release-metadata");
   const { root, files } = fixture();
   try {
     const source = sourceInfo();
-    const packageInfo = (format) => ({ ...source, packageFormat: format, nativePackage: format !== "appimage" });
+    const packageInfo = (format) => withPackageIdentity(source, format);
+    const inspected = (format) => ({
+      format,
+      version: source.factoryVersion,
+      packageVersion: packageInfo(format).packageVersion,
+      packageRelease: packageInfo(format).packageRelease,
+      packageName: "factory-desktop",
+      buildInfo: packageInfo(format),
+    });
     const manifest = createReleaseManifest(source, [
-      { path: files.deb, inspection: { format: "deb", version: "0.140.0", packageName: "factory-desktop", buildInfo: packageInfo("deb") } },
-      { path: files.rpm, inspection: { format: "rpm", version: "0.140.0", packageName: "factory-desktop", buildInfo: packageInfo("rpm") } },
-      { path: files.appimage, inspection: { format: "appimage", version: "0.140.0", packageName: "factory-desktop", buildInfo: packageInfo("appimage") } },
+      { path: files.deb, inspection: inspected("deb") },
+      { path: files.rpm, inspection: inspected("rpm") },
+      { path: files.appimage, inspection: inspected("appimage") },
     ]);
     assert.deepEqual(manifest.packages.map((entry) => entry.format), ["appimage", "deb", "rpm"]);
     assert.doesNotThrow(() => validateReleaseManifest(manifest));
@@ -207,10 +265,51 @@ test("release manifest binds all inspected package formats to source provenance"
     const mismatched = packageInfo("deb");
     mismatched.repositoryCommit = "2".repeat(40);
     assert.throws(() => createReleaseManifest(source, [
-      { path: files.deb, inspection: { format: "deb", version: "0.140.0", packageName: "factory-desktop", buildInfo: mismatched } },
-      { path: files.rpm, inspection: { format: "rpm", version: "0.140.0", packageName: "factory-desktop", buildInfo: packageInfo("rpm") } },
-      { path: files.appimage, inspection: { format: "appimage", version: "0.140.0", packageName: "factory-desktop", buildInfo: packageInfo("appimage") } },
+      { path: files.deb, inspection: { ...inspected("deb"), buildInfo: mismatched } },
+      { path: files.rpm, inspection: inspected("rpm") },
+      { path: files.appimage, inspection: inspected("appimage") },
     ]), /embedded provenance/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("corrected release context binds wrapper revision and exact asset names", () => {
+  const { createReleaseManifest, validateReleaseContext, withPackageIdentity } = require("../scripts/release-metadata");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-corrected-release-context-"));
+  try {
+    const source = { ...sourceInfo(), factoryVersion: "0.139.0", wrapperRevision: "linux.1" };
+    const paths = {
+      deb: path.join(root, "factory-desktop_0.139.0-1_amd64.deb"),
+      rpm: path.join(root, "factory-desktop-0.139.0-2.x86_64.rpm"),
+      appimage: path.join(root, "Factory-0.139.0-linux.1-x86_64.AppImage"),
+    };
+    const artifacts = Object.entries(paths).map(([format, artifactPath]) => {
+      fs.writeFileSync(artifactPath, `${format}\n`);
+      const buildInfo = withPackageIdentity(source, format);
+      return {
+        path: artifactPath,
+        inspection: {
+          format,
+          packageName: "factory-desktop",
+          version: source.factoryVersion,
+          packageVersion: buildInfo.packageVersion,
+          packageRelease: buildInfo.packageRelease,
+          buildInfo,
+        },
+      };
+    });
+    const manifest = createReleaseManifest(source, artifacts);
+    assert.doesNotThrow(() => validateReleaseContext(manifest, {
+      factoryVersion: "0.139.0",
+      wrapperRevision: "linux.1",
+      repositoryCommit: source.repositoryCommit,
+    }));
+    assert.deepEqual(manifest.packages.map((entry) => entry.filename).sort(), Object.values(paths).map((file) => path.basename(file)).sort());
+    assert.throws(() => validateReleaseContext(manifest, {
+      factoryVersion: "0.139.0",
+      repositoryCommit: source.repositoryCommit,
+    }), /wrapper revision/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -218,7 +317,7 @@ test("release manifest binds all inspected package formats to source provenance"
 
 test("release bundle verification binds manifest, files, patch report, and summary", () => {
   const { sha256File } = require("../scripts/dmg");
-  const { verifyReleaseBundle, writeChecksums } = require("../scripts/release-metadata");
+  const { verifyReleaseBundle, withPackageIdentity, writeChecksums } = require("../scripts/release-metadata");
   const { root, files } = fixture();
   try {
     const source = sourceInfo();
@@ -226,13 +325,18 @@ test("release bundle verification binds manifest, files, patch report, and summa
       ["deb", files.deb],
       ["rpm", files.rpm],
       ["appimage", files.appimage],
-    ].map(([format, file]) => ({
-      filename: path.basename(file),
-      format,
-      nativePackage: format !== "appimage",
-      sha256: sha256File(file),
-      bytes: fs.statSync(file).size,
-    })).sort((left, right) => left.format.localeCompare(right.format));
+    ].map(([format, file]) => {
+      const identity = withPackageIdentity(source, format);
+      return {
+        filename: path.basename(file),
+        format,
+        nativePackage: format !== "appimage",
+        packageVersion: identity.packageVersion,
+        packageRelease: identity.packageRelease,
+        sha256: sha256File(file),
+        bytes: fs.statSync(file).size,
+      };
+    }).sort((left, right) => left.format.localeCompare(right.format));
     const report = {
       schemaVersion: 1,
       originalHash: source.rawAsarSha256,
@@ -254,7 +358,14 @@ test("release bundle verification binds manifest, files, patch report, and summa
       electronVersion: source.electronVersion,
       buildTimestamp: source.buildTimestamp,
       requiredPatches: [{ id: "required-patch", accepted: true, matcherClass: "fixture" }],
-      packages: packages.map((entry) => ({ filename: entry.filename, format: entry.format, inspected: true, packageSha256: entry.sha256 })),
+      packages: packages.map((entry) => ({
+        filename: entry.filename,
+        format: entry.format,
+        inspected: true,
+        packageSha256: entry.sha256,
+        packageVersion: entry.packageVersion,
+        packageRelease: entry.packageRelease,
+      })),
     };
     const buildInfo = path.join(root, "build-info.json");
     fs.writeFileSync(buildInfo, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -358,6 +469,19 @@ test("release rejection summary links bounded patch drift diagnostics", () => {
   assert.match(summary, /stopped fail-closed/);
 });
 
+test("release acceptance rejects a failed whole-bundle syntax outcome", () => {
+  const { acceptanceSummary } = require("../scripts/release-build");
+  assert.throws(() => acceptanceSummary(sourceInfo(), {
+    outcomes: [{
+      id: "bundle-javascript-syntax",
+      matched: true,
+      alreadyPatched: true,
+      validationPassed: false,
+      evidence: { mode: "commonjs-script", checkedFiles: 1 },
+    }],
+  }, []), /rejected patch/);
+});
+
 test("workflow permissions and publication ordering are fail-closed", () => {
   const watch = fs.readFileSync(path.join(ROOT, ".github/workflows/upstream-watch.yml"), "utf8");
   const release = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
@@ -367,7 +491,8 @@ test("workflow permissions and publication ordering are fail-closed", () => {
   assert.match(watch, /issues:\s*write/);
   assert.doesNotMatch(watch, /contents:\s*write/);
   assert.match(release, /workflow_dispatch:/);
-  assert.match(release, /version:/);
+  assert.match(release, /factory_version:/);
+  assert.match(release, /wrapper_revision:/);
   assert.match(release, /source_ref:/);
   assert.match(release, /publish:[\s\S]*needs:\s*\[build-and-accept\]/);
   assert.match(release, /publish:[\s\S]*contents:\s*write/);
@@ -378,16 +503,31 @@ test("workflow permissions and publication ordering are fail-closed", () => {
   assert.match(release, /publish:[\s\S]*persist-credentials:\s*false/);
   assert.doesNotMatch(release, /publish:[\s\S]*ref:\s*\$\{\{ needs\['build-and-accept'\]\.outputs\.source_commit \}\}/);
   assert.match(release, /verifyReleaseBundle/);
+  assert.match(release, /releaseIdentity/);
+  assert.match(release, /--factory-version "\$FACTORY_RELEASE_VERSION"/);
+  assert.match(release, /--wrapper-revision "\$FACTORY_WRAPPER_REVISION"/);
   assert.match(release, /Summarize release rejection/);
-  assert.doesNotMatch(release, /--version "\$\{\{ inputs\.version \}\}"/);
-  assert.doesNotMatch(release, /VERSION=\$\{\{ inputs\.version \}\}/);
-  assert.doesNotMatch(release, /printf[^\n]*inputs\.version/);
-  assert.doesNotMatch(release, /gh release create[^\n]*inputs\.version/);
+  assert.doesNotMatch(release, /inputs\.version/);
+  assert.doesNotMatch(release, /gh release create[^\n]*inputs\.(?:factory_version|wrapper_revision)/);
   assert.doesNotMatch(release, /release-assets\/.*\.(?:dmg|asar)/i);
   assert.doesNotMatch(release, /pull_request_target/);
   assert.match(watch, /actions\/cache\/restore@v4/);
   assert.match(watch, /actions\/cache\/save@v4/);
   assert.match(watch, /Save newly downloaded content-addressed DMG[\s\S]*if:\s*always\(\) &&/);
+  assert.doesNotMatch(watch, /releases\/latest/);
+  assert.doesNotMatch(watch, /tag_name/);
+  assert.match(watch, /accepted-upstream\.json/);
+});
+
+test("release-check confines all smoke and real harness temporary files to one root", () => {
+  const releaseCheck = fs.readFileSync(path.join(ROOT, "scripts/release-check.js"), "utf8");
+  const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
+  assert.match(releaseCheck, /FACTORY_TEST_TMP_ROOT/);
+  assert.match(releaseCheck, /TMPDIR/);
+  assert.match(releaseCheck, /package-smoke/);
+  assert.match(releaseCheck, /test-real-bundles/);
+  assert.match(makefile, /FACTORY_TEST_TMP_ROOT/);
+  assert.match(makefile, /if \[\[ -n "\$\$FACTORY_TEST_TMP_ROOT" \]\]/);
 });
 
 test("final regression matrix documents real fixture skips instead of fake passes", () => {

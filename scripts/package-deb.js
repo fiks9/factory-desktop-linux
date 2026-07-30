@@ -7,6 +7,8 @@ const { execFileSync } = require("node:child_process");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout, sha256 } = require("./runtime");
 const { scanPackageTree, stageInstalledUpdateBuilder } = require("./package-hygiene");
 const { writePackageBuildInfo } = require("./release-metadata");
+const { validateAppJavaScript } = require("./validate-app-javascript");
+const { releaseIdentity } = require("./release-identity");
 
 const REQUIRED_PATCHES = [
   "daemon-transport-force-websocket",
@@ -18,6 +20,7 @@ const REQUIRED_PATCHES = [
   "packaged-daemon-mode",
   "disable-keyring",
   "protocol-handler",
+  "bundle-javascript-syntax",
 ];
 
 function copyRecursive(source, destination) {
@@ -79,13 +82,15 @@ function assertAcceptedPatchReport(appDir) {
 
 function buildDeb(options) {
   const appDir = path.resolve(options.appDir);
-  const version = options.version;
+  const identity = releaseIdentity(options.version, options.wrapperRevision ?? null);
+  const version = identity.factoryVersion;
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Invalid package version: ${version}`);
   if (!fs.existsSync(path.join(appDir, "resources", "app.asar"))) throw new Error("Staged app is missing resources/app.asar");
   assertPackagedRuntimeLayout(appDir, { binaryName: PRODUCT_BINARY_NAME });
   assertNoWorkspaceSymlinks(appDir);
   assertNoBundledDroid(appDir);
   assertAcceptedPatchReport(appDir);
+  validateAppJavaScript(appDir);
   scanPackageTree(appDir, { workspaceRoot: process.cwd() });
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deb-"));
@@ -102,7 +107,7 @@ function buildDeb(options) {
   fs.mkdirSync(path.join(root, "usr", "lib", "systemd", "user"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "polkit-1", "actions"), { recursive: true });
   copyRecursive(appDir, path.join(root, "opt", "Factory"));
-  writePackageBuildInfo(path.join(root, "opt", "Factory"), "deb");
+  writePackageBuildInfo(path.join(root, "opt", "Factory"), "deb", { wrapperRevision: identity.wrapperRevision });
 
   const desktop = path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.desktop");
   fs.copyFileSync(desktop, path.join(root, "usr", "share", "applications", "factory-desktop.desktop"));
@@ -126,7 +131,7 @@ function buildDeb(options) {
   }
   const controlText = [
     "Package: factory-desktop",
-    `Version: ${version}`,
+    `Version: ${identity.debVersion}`,
     "Section: devel",
     "Priority: optional",
     "Architecture: amd64",
@@ -139,7 +144,7 @@ function buildDeb(options) {
   fs.writeFileSync(path.join(control, "control"), controlText, { mode: 0o644 });
   const outputDir = path.resolve(options.outputDir || path.join(process.cwd(), "dist"));
   fs.mkdirSync(outputDir, { recursive: true });
-  const output = path.join(outputDir, `factory-desktop_${version}_amd64.deb`);
+  const output = path.join(outputDir, identity.debFilename);
   fs.rmSync(output, { force: true });
   execFileSync("dpkg-deb", ["--build", "--root-owner-group", root, output], { stdio: "inherit", timeout: 10 * 60 * 1000 });
   const extracted = path.join(temp, "extracted");

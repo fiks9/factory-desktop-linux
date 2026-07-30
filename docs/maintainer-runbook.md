@@ -11,7 +11,9 @@ node scripts/upstream-watch.js
 The watcher discovers a version through official metadata, then downloads that
 exact version from the official `downloads.factory.ai` S3 bucket. Do not replace
 the exact URL builder with the mutable latest-download redirect or hand-edit the
-cache index. Host/path/version drift fails closed.
+cache index. `release/accepted-upstream.json` is the sole accepted-version
+authority; GitHub `releases/latest`, tags, drafts, and prereleases never advance
+it. Host/path/version drift fails closed.
 
 Build an authorized local DMG with an absolute path and exact version:
 
@@ -31,6 +33,16 @@ make package-smoke VERSION=0.139.0 DIST_DIR=/tmp/factory-package-smoke
 make test-real-bundles
 make release-check
 ```
+
+Exercise an explicit wrapper revision before a corrected release:
+
+```bash
+make package-smoke VERSION=0.139.0 WRAPPER_REVISION=linux.1 DIST_DIR=/tmp/factory-package-smoke-linux.1
+```
+
+This must produce deb `0.139.0-1`, RPM `0.139.0-2`, and
+`Factory-0.139.0-linux.1-x86_64.AppImage` while every inspection still reports
+upstream Factory version `0.139.0`.
 
 Build formats only from an accepted staged app:
 
@@ -66,6 +78,7 @@ only after structural/version acceptance. Do not hand-edit this index.
 | raw 0.138.0 fixture | explicit `SKIP (local fixture unavailable)` allowed; never fake PASS |
 | deb/rpm/AppImage | build, extraction, hygiene, inspection pass |
 | package hygiene | no forbidden paths, links, or executable modes |
+| whole-bundle JavaScript syntax | required `bundle-javascript-syntax` outcome plus staged and extracted parse-only checks |
 | product-named ELF | `factory-desktop`, never `electron` |
 | protocol MIME | `x-scheme-handler/factory-desktop` present |
 | StartupWMClass | `Factory` present |
@@ -79,7 +92,8 @@ only after structural/version acceptance. Do not hand-edit this index.
 ## Debugging
 
 - Patch drift: preserve `patch-report.json` and bounded `patch-drift.json`; follow
-  [patch drift](patch-drift.md). Never package after a required failure.
+  [patch drift](patch-drift.md). A `bundle-javascript-syntax` failure means the
+  complete patched CommonJS bundle did not parse; never package after it.
 - Daemon adoption: run `curl --fail http://127.0.0.1:37643/health`, then
   `systemctl --user status factory-droid-daemon.service`. Remote access is not an
   adoption condition.
@@ -121,6 +135,8 @@ and cache directories.
 
 After local green verdict, push the reviewed commit and manually run the
 **Release** workflow from the protected default branch with exact Factory version
-and a reviewed source ref in that branch's history. Wait for
+(`factory_version`), explicit `wrapper_revision`, and a reviewed `source_ref` in
+that branch's history. For the contained 0.139.0 correction the values are
+`0.139.0`, `linux.1`, and `main`. Wait for
 `build-and-accept`; `publish` cannot run before it. Review `checksums.txt`,
 `build-info.json`, `patch-report.json`, and `acceptance-summary.json`.

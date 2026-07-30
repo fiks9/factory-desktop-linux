@@ -4,8 +4,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { test } = require("node:test");
 const asar = require("@electron/asar");
+const { sha256File } = require("../src/asar-io");
 const { patchAsar } = require("../src/engine");
 const { validatePackaging } = require("../src/validators");
 
@@ -23,7 +25,14 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+}
+
+function commaExpressionBundle() {
+  return rawBundle().replace(
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());W.ipcMain.handle("updates:install",async()=>legacyInstall());W.ipcMain.handle("updates:checkNow",async()=>legacyCheckNow());',
+    'function updates(){return(W.ipcMain.handle("updates:getState",async()=>legacyGetState()),W.ipcMain.handle("updates:install",async()=>legacyInstall()),W.ipcMain.handle("updates:checkNow",async()=>legacyCheckNow()),true)}',
+  );
 }
 
 test("raw hardcoded transport bundle patches all required descriptors", async () => {
@@ -65,6 +74,16 @@ test("native updater patch loads the package bridge once and replaces all IPC ha
   assert.doesNotMatch(patched, /legacy(?:GetState|Install|CheckNow)/);
 });
 
+test("native updater patch remains valid inside a comma-expression", async () => {
+  const source = commaExpressionBundle();
+  assert.doesNotThrow(() => new vm.Script(source, { filename: "upstream-index.js" }));
+  const { asarPath } = await fixture(source);
+  await patchAsar({ asarPath });
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+
+  assert.doesNotThrow(() => new vm.Script(patched, { filename: "index.js" }));
+});
+
 test("native updater patch fails closed when the IPC contract drifts", async () => {
   const missing = rawBundle().replace('W.ipcMain.handle("updates:install",async()=>legacyInstall());', "");
   const missingFixture = await fixture(missing);
@@ -76,6 +95,49 @@ test("native updater patch fails closed when the IPC contract drifts", async () 
   );
   const duplicateFixture = await fixture(duplicate);
   await assert.rejects(() => patchAsar({ asarPath: duplicateFixture.asarPath }), /linux-native-updater-button/);
+
+  const interleaved = rawBundle().replace(
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());W.ipcMain.handle("updates:install",async()=>legacyInstall());',
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());unrelatedSideEffect();W.ipcMain.handle("updates:install",async()=>legacyInstall());',
+  );
+  const interleavedFixture = await fixture(interleaved);
+  await assert.rejects(() => patchAsar({ asarPath: interleavedFixture.asarPath }), /linux-native-updater-button/);
+});
+
+test("native updater patch rejects a foreign partial marker", async () => {
+  const partial = rawBundle().replace(
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());',
+    '/* factory-linux:linux-native-updater-button */W.ipcMain.handle("updates:getState",async()=>legacyGetState());',
+  );
+  const { asarPath } = await fixture(partial);
+  await assert.rejects(() => patchAsar({ asarPath }), /linux-native-updater-button/);
+});
+
+test("syntax gate rejects a marker-bearing invalid complete bundle", () => {
+  const { validateJavaScriptFiles } = require("../src/javascript-syntax");
+  const validation = validateJavaScriptFiles([
+    { path: ".vite/build/index.js", content: '(()=>0),/* factory-linux:test */const broken=1' },
+  ], { changedPaths: new Set() });
+
+  assert.equal(validation.validationPassed, false);
+  assert.equal(validation.evidence.checkedFiles, 1);
+  assert.match(validation.errors[0], /index\.js.*Unexpected token/);
+});
+
+test("patch engine rejects invalid complete syntax before replacing the ASAR", async () => {
+  const invalid = `${rawBundle()}function broken(){return(0),/* factory-linux:foreign-regression */const value=1}`;
+  const { asarPath, root } = await fixture(invalid);
+  const reportPath = path.join(root, "failed-syntax-report.json");
+  const originalHash = sha256File(asarPath);
+
+  await assert.rejects(() => patchAsar({ asarPath, reportPath }), /bundle-javascript-syntax/);
+
+  assert.equal(sha256File(asarPath), originalHash);
+  const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  const outcome = report.outcomes.find((item) => item.id === "bundle-javascript-syntax");
+  assert.equal(outcome.validationPassed, false);
+  assert.equal(report.changed, false);
+  assert.equal(report.finalHash, originalHash);
 });
 
 test("critical patch drift exposes only bounded diagnostic excerpts", async () => {

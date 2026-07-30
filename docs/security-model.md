@@ -18,9 +18,21 @@ does not persist checkout credentials, and rejects source refs outside that
 commit's history. PR artifacts are synthetic; real DMGs/ASARs are never uploaded.
 Patch diagnostics are bounded metadata/excerpts.
 
+Release identity separates the exact upstream Factory version from the Linux
+wrapper revision. Strict `linux.N` parsing derives the tag, deb revision, RPM
+release, AppImage filename, and package provenance. Exact DMG acquisition and
+embedded version acceptance receive only the Factory version. A wrapper tag or
+draft release cannot become accepted-upstream evidence.
+
 An upstream version is bound to a content-addressed DMG hash only after DMG
 metadata and exact-version acceptance. A rejected response may remain as an
 unreferenced cache blob, but it cannot poison the version index.
+
+Structural marker validation is not treated as JavaScript validity. The
+patcher, staged package builders, and extracted package inspector independently
+parse the complete marker-bearing bundles without executing them. Any syntax
+error remains fail-closed through updater candidate acceptance and release
+publication.
 
 Native deb/rpm packages contain the updater. AppImage has no privileged native
 updater and reports `update-manager-unavailable`. Default install needs polkit
