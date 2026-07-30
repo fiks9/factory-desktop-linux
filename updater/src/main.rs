@@ -19,7 +19,7 @@ use factory_update_manager::polkit::{
 };
 use factory_update_manager::rollback::KnownGoodStore;
 use factory_update_manager::state::{State, StateRecord, StateStore};
-use factory_update_manager::upstream::UpstreamClient;
+use factory_update_manager::upstream::{build_exact_download_url, UpstreamClient};
 use std::env::current_exe;
 use std::ffi::OsString;
 use std::fs;
@@ -419,17 +419,20 @@ fn check_now(
                 "acquiring immutable DMG candidate",
             )?;
             let cache = DmgCache::new(paths.downloads_dir());
+            let official_candidate = pinned_dmg.is_none();
             let dmg = match pinned_dmg {
                 Some(path) => cache.cache_pinned(&path)?,
                 None => {
-                    let upstream = UpstreamClient::official()?;
-                    let url = upstream.download_url("x64")?;
-                    runtime()?.block_on(factory_update_manager::download::download_official(
-                        upstream.client(),
-                        &url,
-                        &version,
-                        &cache,
-                    ))?
+                    if let Some(cached) = cache.lookup_accepted_version(&version)? {
+                        cached
+                    } else {
+                        let upstream = UpstreamClient::official()?;
+                        let url = build_exact_download_url(&version, "x64")?;
+                        let client = upstream.download_client(&version, "x64")?;
+                        runtime()?.block_on(factory_update_manager::download::download_official(
+                            &client, &url, &version, &cache,
+                        ))?
+                    }
                 }
             };
             let candidate_id = candidate_id_for_digest(&dmg.sha256)?;
@@ -463,6 +466,9 @@ fn check_now(
                 format: manager.format(),
                 environment,
             })?;
+            if official_candidate {
+                cache.record_accepted_version(&version, &dmg.sha256)?;
+            }
             transition(
                 store,
                 &mut state,

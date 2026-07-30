@@ -3,7 +3,9 @@ use serde::Deserialize;
 use std::time::Duration;
 
 pub const LATEST_VERSION_URL: &str = "https://api.factory.ai/api/desktop/latest-version";
-pub const DESKTOP_DOWNLOAD_URL: &str = "https://app.factory.ai/api/desktop";
+pub const OFFICIAL_DMG_ORIGIN: &str = "https://s3.us-west-1.amazonaws.com";
+pub const OFFICIAL_DMG_PREFIX: &str = "/downloads.factory.ai/factory-desktop/releases";
+pub const OFFICIAL_DMG_ARCHITECTURE: &str = "x64";
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -11,7 +13,6 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 pub struct UpstreamClient {
     client: reqwest::Client,
     latest_url: String,
-    download_url: String,
 }
 
 #[derive(Deserialize)]
@@ -22,25 +23,17 @@ struct LatestVersion {
 
 impl UpstreamClient {
     pub fn official() -> Result<Self, Error> {
-        Self::new(
-            LATEST_VERSION_URL.to_owned(),
-            DESKTOP_DOWNLOAD_URL.to_owned(),
-        )
+        Self::new(LATEST_VERSION_URL.to_owned())
     }
 
-    pub fn new(latest_url: String, download_url: String) -> Result<Self, Error> {
+    pub fn new(latest_url: String) -> Result<Self, Error> {
         reqwest::Url::parse(&latest_url)?;
-        reqwest::Url::parse(&download_url)?;
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::limited(8))
             .build()?;
-        Ok(Self {
-            client,
-            latest_url,
-            download_url,
-        })
+        Ok(Self { client, latest_url })
     }
 
     pub async fn latest_version(&self) -> Result<String, Error> {
@@ -72,24 +65,90 @@ impl UpstreamClient {
         parse_version(&payload.latest_version)
     }
 
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
+    pub fn download_client(
+        &self,
+        version: &str,
+        architecture: &str,
+    ) -> Result<reqwest::Client, Error> {
+        let version = parse_version(version)?;
+        let architecture = architecture.to_owned();
+        exact_download_path(&version, &architecture)?;
+        Ok(reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= 8 {
+                    return attempt.error("too many official Factory DMG redirects");
+                }
+                match validate_official_dmg_url(attempt.url().as_str(), &version, &architecture) {
+                    Ok(_) => attempt.follow(),
+                    Err(error) => attempt.error(error),
+                }
+            }))
+            .build()?)
     }
+}
 
-    pub fn download_url(&self, architecture: &str) -> Result<String, Error> {
-        if architecture.is_empty()
-            || !architecture
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            return Err(format!("invalid architecture: {architecture}").into());
-        }
-        let mut url = reqwest::Url::parse(&self.download_url)?;
-        url.query_pairs_mut()
-            .append_pair("platform", "darwin")
-            .append_pair("architecture", architecture);
-        Ok(url.into())
+fn exact_download_path(version: &str, architecture: &str) -> Result<String, Error> {
+    let version = parse_version(version)?;
+    if architecture != OFFICIAL_DMG_ARCHITECTURE {
+        return Err(
+            format!("unsupported official Factory DMG architecture: {architecture}").into(),
+        );
     }
+    Ok(format!(
+        "{OFFICIAL_DMG_PREFIX}/{version}/darwin/{architecture}/Factory-{version}-{architecture}.dmg"
+    ))
+}
+
+pub fn build_exact_download_url(version: &str, architecture: &str) -> Result<String, Error> {
+    Ok(format!(
+        "{OFFICIAL_DMG_ORIGIN}{}",
+        exact_download_path(version, architecture)?
+    ))
+}
+
+pub fn validate_official_dmg_url(
+    value: &str,
+    version: &str,
+    architecture: &str,
+) -> Result<String, Error> {
+    let expected_path = exact_download_path(version, architecture)?;
+    let candidate =
+        reqwest::Url::parse(value).map_err(|_| "official Factory DMG URL is invalid")?;
+    let expected_origin = reqwest::Url::parse(OFFICIAL_DMG_ORIGIN)?;
+    let valid_authority = candidate.scheme() == "https"
+        && candidate.host_str() == expected_origin.host_str()
+        && candidate.port().is_none()
+        && candidate.username().is_empty()
+        && candidate.password().is_none();
+    if !valid_authority {
+        return Err("official Factory DMG URL must use the expected HTTPS host".into());
+    }
+    if candidate.path() != expected_path {
+        return Err(format!(
+            "official Factory DMG URL path does not match requested version {}",
+            parse_version(version)?
+        )
+        .into());
+    }
+    if candidate.query().is_some() || candidate.fragment().is_some() {
+        return Err("official Factory DMG URL must not contain query or fragment".into());
+    }
+    build_exact_download_url(version, architecture)
+}
+
+pub fn resolve_official_dmg_redirect(
+    current_url: &str,
+    location: &str,
+    version: &str,
+    architecture: &str,
+) -> Result<String, Error> {
+    let current = validate_official_dmg_url(current_url, version, architecture)?;
+    if location.is_empty() {
+        return Err("official Factory DMG redirect is missing".into());
+    }
+    let resolved = reqwest::Url::parse(&current)?.join(location)?;
+    validate_official_dmg_url(resolved.as_str(), version, architecture)
 }
 
 pub fn parse_version(value: &str) -> Result<String, Error> {

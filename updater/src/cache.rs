@@ -1,6 +1,7 @@
 use crate::state::sync_directory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
@@ -16,6 +17,13 @@ pub struct CachedDmg {
 #[derive(Debug, Clone)]
 pub struct DmgCache {
     directory: PathBuf,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VersionIndex {
+    schema_version: u32,
+    versions: BTreeMap<String, String>,
 }
 
 impl DmgCache {
@@ -79,6 +87,117 @@ impl DmgCache {
         &self.directory
     }
 
+    fn version_index_path(&self) -> PathBuf {
+        self.directory.join("version-index.json")
+    }
+
+    fn read_version_index(&self) -> io::Result<VersionIndex> {
+        let path = self.version_index_path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(VersionIndex {
+                    schema_version: 1,
+                    versions: BTreeMap::new(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_file() || metadata.len() > 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "accepted version index must be a bounded regular file",
+            ));
+        }
+        let index: VersionIndex = serde_json::from_reader(File::open(path)?)?;
+        if index.schema_version != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "accepted version index schema is invalid",
+            ));
+        }
+        for (version, digest) in &index.versions {
+            crate::upstream::parse_version(version)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            validate_digest(digest)?;
+        }
+        Ok(index)
+    }
+
+    pub fn lookup_accepted_version(&self, version: &str) -> io::Result<Option<CachedDmg>> {
+        let version = crate::upstream::parse_version(version)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        let index = self.read_version_index()?;
+        let Some(digest) = index.versions.get(&version) else {
+            return Ok(None);
+        };
+        let path = self.directory.join(format!("Factory-{digest}.dmg"));
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_file() || metadata.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "indexed DMG must be a non-empty regular file",
+            ));
+        }
+        if sha256_file(&path)? != *digest {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cached DMG hash mismatch for Factory {version}"),
+            ));
+        }
+        Ok(Some(CachedDmg {
+            path,
+            sha256: digest.clone(),
+            bytes: metadata.len(),
+        }))
+    }
+
+    pub fn record_accepted_version(&self, version: &str, digest: &str) -> io::Result<()> {
+        let version = crate::upstream::parse_version(version)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        validate_digest(digest)?;
+        fs::create_dir_all(&self.directory)?;
+        let artifact = self.directory.join(format!("Factory-{digest}.dmg"));
+        let metadata = fs::symlink_metadata(&artifact)?;
+        if !metadata.file_type().is_file()
+            || metadata.len() == 0
+            || sha256_file(&artifact)? != digest
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "accepted version index cannot reference an unverified DMG",
+            ));
+        }
+        let mut index = self.read_version_index()?;
+        index.versions.insert(version, digest.to_owned());
+        let temporary = self.directory.join(format!(
+            ".version-index-{}-{}.partial",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let publish = (|| {
+            let mut output = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            serde_json::to_writer_pretty(&mut output, &index)?;
+            use std::io::Write;
+            output.write_all(b"\n")?;
+            output.sync_all()?;
+            fs::rename(&temporary, self.version_index_path())?;
+            sync_directory(&self.directory)
+        })();
+        if publish.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        publish
+    }
+
     pub(crate) fn create_partial(&self) -> io::Result<(PathBuf, File)> {
         fs::create_dir_all(&self.directory)?;
         let path = self.directory.join(format!(
@@ -126,6 +245,20 @@ impl DmgCache {
             bytes,
         })
     }
+}
+
+fn validate_digest(digest: &str) -> io::Result<()> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "accepted version index digest must be a lowercase SHA-256",
+        ));
+    }
+    Ok(())
 }
 
 /// Derive a confined workspace identifier from a validated content digest.
