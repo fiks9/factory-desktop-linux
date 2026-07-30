@@ -1,12 +1,12 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-real-bundles package-smoke lint typecheck bash-check rust-check build-app deb rpm appimage updater smoke-dmg
+.PHONY: check test test-real-bundles package-smoke release-check lint typecheck bash-check rust-check build-app deb rpm appimage updater smoke-dmg
 
 check: lint typecheck bash-check rust-check
 
 test:
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js tests/package-hygiene.test.js tests/update-bridge.test.js
+	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js tests/package-hygiene.test.js tests/update-bridge.test.js tests/release-infrastructure.test.js
 
 test-real-bundles: updater
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
@@ -15,6 +15,9 @@ test-real-bundles: updater
 package-smoke: updater
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
 	@node scripts/package-smoke.js "$(DIST_DIR)" "$(or $(VERSION),0.139.0)"
+
+release-check:
+	@node scripts/release-check.js
 
 lint:
 	@node --check scripts/phase0-check.js

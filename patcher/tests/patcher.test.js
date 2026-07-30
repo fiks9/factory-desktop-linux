@@ -78,6 +78,22 @@ test("native updater patch fails closed when the IPC contract drifts", async () 
   await assert.rejects(() => patchAsar({ asarPath: duplicateFixture.asarPath }), /linux-native-updater-button/);
 });
 
+test("critical patch drift exposes only bounded diagnostic excerpts", async () => {
+  const drifted = rawBundle().replace('W.ipcMain.handle("updates:install",async()=>legacyInstall());', "");
+  const { asarPath } = await fixture(drifted);
+  await assert.rejects(async () => {
+    try {
+      await patchAsar({ asarPath });
+    } catch (error) {
+      assert.ok(Array.isArray(error.excerpts));
+      assert.ok(error.excerpts.length > 0);
+      assert.ok(error.excerpts.every((entry) => entry.text.length <= 1024));
+      assert.match(error.excerpts.map((entry) => entry.text).join("\n"), /updates:getState/);
+      throw error;
+    }
+  }, /linux-native-updater-button/);
+});
+
 test("garbage bundle fails closed on the first required patch", async () => {
   const { asarPath, root } = await fixture("console.log('not a Factory daemon bundle')");
   const reportPath = path.join(root, "failed-report.json");

@@ -19,12 +19,15 @@ fn test_paths(root: &Path) -> Paths {
 }
 
 fn command(root: &Path) -> Command {
+    let proc_root = root.join("proc");
+    fs::create_dir_all(&proc_root).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_factory-update-manager"));
     command
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state-home"))
         .env("XDG_CACHE_HOME", root.join("cache-home"))
-        .env("XDG_CONFIG_HOME", root.join("config-home"));
+        .env("XDG_CONFIG_HOME", root.join("config-home"))
+        .env("FACTORY_TEST_PROC_ROOT", proc_root);
     command
 }
 

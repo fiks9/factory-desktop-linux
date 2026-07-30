@@ -7,13 +7,13 @@ application without storing the upstream payload in this repository.
 
 1. Phase 0 defines repository, legal, testing, and generated-artifact
    contracts.
-2. Phase 1 will add deterministic DMG caching/extraction and a minimal Debian
+2. Phase 1 added deterministic DMG caching/extraction and a minimal Debian
    package.
-3. Phase 2 will add required ASAR patch descriptors and post-patch validators.
-4. Phase 3 will add package hygiene, AppImage, and update-builder staging.
-5. Phase 4 will add the Rust update manager and transactional installation.
-6. Phase 5 will connect the in-app update UX and polkit fallback paths.
-7. Phase 6 will add scheduled upstream checks and releases.
+3. Phase 2 added required ASAR patch descriptors and post-patch validators.
+4. Phase 3 added package hygiene, AppImage, and update-builder staging.
+5. Phase 4 added the Rust update manager and transactional installation.
+6. Phase 5 connected the in-app update UX and polkit fallback paths.
+7. Phase 6 adds scheduled upstream checks, release gates, and provenance.
 
 ## Non-Negotiable Invariants
 

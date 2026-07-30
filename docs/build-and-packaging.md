@@ -36,11 +36,10 @@ make smoke-dmg DMG=/absolute/path/Factory.dmg VERSION=0.139.0
 make deb APP_DIR=work/candidate-123/app VERSION=0.139.0
 ```
 
-Phase 1 builds an unpatched app. The runtime assembly accepts
-`patchedAsarPath` as an explicit hook, so Phase 2 can run the required patch
-engine before the Linux Electron runtime is staged. Phase 1 records whether
-the hook was external in `build-info.json`; it does not pretend the source
-ASAR was patched.
+`make build-app` runs the required patch engine before the Linux Electron
+runtime is staged. Runtime assembly retains a programmatic `patchedAsarPath`
+hook, but release packaging rejects any staged app without the repository-owned
+accepted patch report and matching provenance hash.
 
 ## Acceptance Profile v1
 
@@ -50,9 +49,10 @@ and `Contents/Resources/app.asar`. The app version is read from
 Framework `Info.plist`. Missing metadata is a hard failure. If `VERSION` or a
 content hash was supplied, mismatches are hard failures.
 
-The base `.deb` contains no updater. Its post-install script applies root
-ownership and mode `4755` to `chrome-sandbox`, refreshes desktop metadata, and
-registers `factory-desktop://` where an active user session is available.
+Native `.deb` and `.rpm` packages contain the updater. The post-install script
+applies root ownership and mode `4755` to `chrome-sandbox`, refreshes desktop
+metadata, and registers `factory-desktop://` where an active user session is
+available.
 
 The desktop entry includes `FACTORY_DISABLE_KEYRING=1`,
 `MimeType=x-scheme-handler/factory-desktop;`, and `StartupWMClass=Factory`.

@@ -8,6 +8,7 @@ const { assertPackagedRuntimeLayout, sha256 } = require("./runtime");
 const { assertAcceptedPatchReport, assertNoBundledDroid, resolveUpdaterBinary } = require("./package-deb");
 const { scanPackageTree, stageInstalledUpdateBuilder } = require("./package-hygiene");
 const { RPM_POST_INSTALL, RPM_PRE_UNINSTALL } = require("./package-contract");
+const { writePackageBuildInfo } = require("./release-metadata");
 
 function rpmVersion(version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`RPM prerelease/build versions are unsupported: ${version}`);
@@ -31,6 +32,7 @@ function buildRpm(options) {
   for (const dir of ["BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"]) fs.mkdirSync(path.join(top, dir), { recursive: true });
   fs.mkdirSync(path.join(payload, "opt", "Factory"), { recursive: true });
   fs.cpSync(appDir, path.join(payload, "opt", "Factory"), { recursive: true, dereference: false });
+  writePackageBuildInfo(path.join(payload, "opt", "Factory"), "rpm");
   fs.mkdirSync(path.join(payload, "usr", "bin"), { recursive: true });
   fs.copyFileSync(resolveUpdaterBinary(options), path.join(payload, "usr", "bin", "factory-update-manager"));
   fs.chmodSync(path.join(payload, "usr", "bin", "factory-update-manager"), 0o755);

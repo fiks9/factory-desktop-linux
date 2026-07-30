@@ -54,6 +54,36 @@ function validateFiles(files, validator) {
   return validator(files);
 }
 
+const DIAGNOSTIC_ANCHORS = {
+  "daemon-transport-force-websocket": ["DesktopDaemonIpc", "resolveTransportMode"],
+  "prevent-listen-ipc": ["--listen", "ipc"],
+  "system-daemon-adoption": ["--enable-child-ipc", "startInternal"],
+  "system-droid-cli-resolver": ["process.resourcesPath", "droid"],
+  "linux-native-updater-button": ["updates:getState", "updates:install", "updates:checkNow"],
+  "auto-updater-guard": ["autoUpdater.checkForUpdates", "autoUpdater.quitAndInstall"],
+  "packaged-daemon-mode": ["app.isPackaged", "--debug"],
+};
+
+function diagnosticExcerpts(files, patchId) {
+  const anchors = DIAGNOSTIC_ANCHORS[patchId] || [];
+  const excerpts = [];
+  for (const file of files) {
+    for (const anchor of anchors) {
+      const index = file.content.indexOf(anchor);
+      if (index < 0) continue;
+      const start = Math.max(0, index - 384);
+      excerpts.push({
+        patchId,
+        file: file.path,
+        anchor,
+        text: file.content.slice(start, start + 1024),
+      });
+      if (excerpts.length >= 3) return excerpts;
+    }
+  }
+  return excerpts;
+}
+
 async function patchAsar(options) {
   const asarPath = path.resolve(options.asarPath);
   if (!fs.existsSync(asarPath)) throw new Error(`ASAR not found: ${asarPath}`);
@@ -86,6 +116,7 @@ async function patchAsar(options) {
     if (descriptor.ciPolicy === CRITICAL_POLICY && (!(complete.matched || complete.alreadyPatched) || !complete.validationPassed)) {
       const error = new Error(`Required patch failed: ${descriptor.id}`);
       error.report = { schemaVersion: 1, asarPath: path.basename(asarPath), originalHash, finalHash: originalHash, changed: false, outcomes };
+      error.excerpts = diagnosticExcerpts(workingFiles, descriptor.id);
       writeReport(options.reportPath, error.report);
       throw error;
     }
@@ -96,6 +127,7 @@ async function patchAsar(options) {
     if (!outcome.validationPassed) {
       const error = new Error(`Required patch failed: ${outcome.id}`);
       error.report = { schemaVersion: 1, asarPath: path.basename(asarPath), originalHash, finalHash: originalHash, changed: false, outcomes };
+      error.excerpts = diagnosticExcerpts(workingFiles, outcome.id);
       writeReport(options.reportPath, error.report);
       throw error;
     }

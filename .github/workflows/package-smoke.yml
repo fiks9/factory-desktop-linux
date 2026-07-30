@@ -36,7 +36,7 @@ jobs:
       - name: Upload accepted artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: factory-desktop-linux-packages
+          name: synthetic-factory-desktop-linux-packages
           path: |
             dist/*.deb
             dist/*.rpm

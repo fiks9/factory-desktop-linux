@@ -9,7 +9,7 @@ Generated and proprietary-derived payloads are deliberately gitignored.
 
 ## Status
 
-Phase 5 is in progress: deterministic DMG acquisition, Linux runtime staging,
+Phase 6 release infrastructure is implemented: deterministic DMG acquisition, Linux runtime staging,
 fail-closed ASAR patching, package hygiene, `.deb`/`.rpm`/AppImage packaging,
 and the native Rust update lifecycle are in place. Native packages include a
 fixed Electron status bridge, controlled after-exit install/relaunch, desktop
@@ -36,13 +36,15 @@ reports the native updater as unavailable.
 The native updater targets `.deb` and `.rpm` installations. AppImage builds are
 portable and deliberately do not implement privileged native self-update.
 
-## Planned Commands
+## Maintainer Commands
 
 ```bash
 make check
 make test
-make build-app DMG=/absolute/path/to/Factory.dmg
-make deb
+make package-smoke VERSION=0.139.0 DIST_DIR=/tmp/factory-package-smoke
+make test-real-bundles
+make release-check
+make build-app DMG=/absolute/path/to/Factory.dmg VERSION=0.139.0
 make updater
 ```
 
@@ -54,6 +56,9 @@ The `.deb` command requires `APP_DIR` and `VERSION`, for example
 `make build-app` runs the patch engine before staging the Linux runtime.
 `make updater` builds the Rust helper used by native packages. See
 `docs/update-manager.md` for the MVP update flow and privilege model.
+Release publication is manual and fail-closed; see
+`docs/maintainer-runbook.md` and `docs/release-process.md`. Releases are
+checksum-only unless detached signatures are actually present.
 
 ## Legal Notice
 

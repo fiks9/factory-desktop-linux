@@ -6,6 +6,8 @@ const { acquireDmg } = require("./dmg");
 const { extractDmg } = require("./extract-dmg");
 const { assembleRuntime, assertPackagedRuntimeLayout } = require("./runtime");
 const { patchAsar } = require("../patcher/src/engine");
+const { sha256File } = require("./dmg");
+const { buildEnvironment, validateBuildInfo } = require("./release-metadata");
 
 async function buildApp(options = {}) {
   const root = path.resolve(options.root || path.join(__dirname, ".."));
@@ -14,7 +16,7 @@ async function buildApp(options = {}) {
   const candidate = path.join(work, `candidate-${process.pid}`);
   fs.rmSync(candidate, { recursive: true, force: true });
   fs.mkdirSync(candidate, { recursive: true, mode: 0o700 });
-  const dmg = await acquireDmg({
+  const dmg = options.acquiredDmg || await acquireDmg({
     pinnedPath: options.dmg,
     cacheDir: downloads,
     arch: options.arch || "x64",
@@ -38,7 +40,8 @@ async function buildApp(options = {}) {
     cacheDir: options.electronCacheDir || path.join(root, ".cache", "electron"),
   });
   const buildInfo = {
-    phase: 2,
+    schemaVersion: 2,
+    phase: 6,
     source: dmg.source,
     dmgFile: path.basename(dmg.path),
     dmgSha256: dmg.sha256,
@@ -46,19 +49,24 @@ async function buildApp(options = {}) {
     electronVersion: extracted.electronVersion,
     binaryName: runtime.binaryName,
     launcherName: runtime.launcherName,
-    sourceAsarSha256: extracted.appAsarSha256,
-    runtimeAsarSha256: runtime.appAsarSha256,
+    patcherVersion: require("../patcher/package.json").version,
+    rawAsarSha256: extracted.appAsarSha256,
+    patchedAsarSha256: runtime.appAsarSha256,
+    patchReportSha256: patchReport ? sha256File(patchReportPath) : null,
     patchHook: options.patchedAsarPath ? "external" : "phase2-engine",
     patchReportPath: options.patchedAsarPath ? null : ".factory-linux/patch-report.json",
+    ...buildEnvironment(root),
   };
+  buildInfo.patcherCommit = buildInfo.repositoryCommit;
   const metadataDir = path.join(runtime.outputDir, ".factory-linux");
   fs.mkdirSync(metadataDir, { recursive: true });
   if (patchReport) {
     fs.copyFileSync(patchReportPath, path.join(metadataDir, "patch-report.json"));
+    validateBuildInfo(buildInfo, { requirePackage: false });
   }
   fs.writeFileSync(path.join(runtime.outputDir, "build-info.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
   assertPackagedRuntimeLayout(runtime.outputDir, { binaryName: runtime.binaryName });
-  return { dmg, extracted, runtime, buildInfo, appDir: runtime.outputDir };
+  return { dmg, extracted, runtime, patchReport, buildInfo, appDir: runtime.outputDir };
 }
 
 if (require.main === module) {

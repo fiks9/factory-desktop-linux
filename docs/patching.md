@@ -14,7 +14,7 @@ the patcher exits non-zero and the build does not continue.
 | `prevent-listen-ipc` | Guards `push("--listen","ipc")` on Linux. | Marker plus Linux guard around daemon spawn args. |
 | `system-daemon-adoption` | Adopts the user-owned daemon on `127.0.0.1:37643`. | Health URL, `systemctl --user restart factory-droid-daemon.service`, wait budget `15000ms`. |
 | `system-droid-cli-resolver` | Uses the current system `droid` CLI instead of `resources/bin/droid`. | `FACTORY_DROID_PATH`, `command -v droid`, home/local/system lookup paths. |
-| `linux-native-updater-button` | Bridges update action to `factory-update-manager` with override path. | `FACTORY_UPDATE_MANAGER_PATH` and unavailable state. |
+| `linux-native-updater-button` | Loads the fixed package-owned bridge and replaces three known update IPC handlers. | One fixed bridge load, exact handler counts, AppImage unavailable state, no helper path override. |
 | `auto-updater-guard` | Prevents built-in Electron updater calls on Linux. | No unguarded `checkForUpdates`/`quitAndInstall`. |
 
 Packaging validators add required report outcomes for `disable-keyring` and

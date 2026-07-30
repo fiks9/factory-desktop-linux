@@ -813,7 +813,14 @@ fn builder_root(context: &Context) -> Result<PathBuf, Error> {
 }
 
 fn app_is_running() -> bool {
-    let Ok(entries) = fs::read_dir("/proc") else {
+    let proc_root = if cfg!(debug_assertions) {
+        std::env::var_os("FACTORY_TEST_PROC_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/proc"))
+    } else {
+        PathBuf::from("/proc")
+    };
+    let Ok(entries) = fs::read_dir(proc_root) else {
         return false;
     };
     entries.filter_map(Result::ok).any(|entry| {

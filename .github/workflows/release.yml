@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact Factory version (for example 0.140.0)
+        required: true
+        type: string
+      source_ref:
+        description: Repository ref to build
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-accept:
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FACTORY_RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: patcher/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Resolve exact source commit
+        id: source
+        run: |
+          commit=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$commit" "$GITHUB_SHA" || {
+            printf '%s\n' 'source_ref must resolve to the triggering protected branch history' >&2
+            exit 1
+          }
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Validate exact version input
+        run: node -e "require('./scripts/dmg').parseVersion(process.argv[1])" "$FACTORY_RELEASE_VERSION"
+      - name: Install package tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y 7zip cpio desktop-file-utils rpm squashfs-tools
+          npm ci --prefix patcher --ignore-scripts
+      - name: Run blocking source tests
+        run: |
+          make check
+          make test
+      - name: Run synthetic package acceptance
+        run: make package-smoke "VERSION=$FACTORY_RELEASE_VERSION" "DIST_DIR=$RUNNER_TEMP/synthetic-smoke"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cache/release-downloads
+            .cache/electron
+            .cache/appimage
+          key: factory-release-${{ runner.os }}-${{ inputs.version }}
+          restore-keys: |
+            factory-release-${{ runner.os }}-
+      - name: Build and inspect exact upstream release
+        id: release-build
+        continue-on-error: true
+        env:
+          FACTORY_REQUIRE_CLEAN_GIT: "1"
+        run: |
+          test -z "$(git status --porcelain=v1)"
+          node scripts/release-build.js \
+            --version "$FACTORY_RELEASE_VERSION" \
+            --cache-dir "$PWD/.cache/release-downloads" \
+            --output-dir "$RUNNER_TEMP/release-assets"
+          test -z "$(git status --porcelain=v1)"
+      - name: Upload bounded release diagnostics
+        if: always() && steps.release-build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-assets/diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Summarize release rejection
+        if: always() && steps.release-build.outcome == 'failure'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/release-failure-summary.js \
+            "$FACTORY_RELEASE_VERSION" \
+            "$RUNNER_TEMP/release-assets/diagnostics" \
+            "$RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce build acceptance
+        if: always() && steps.release-build.outcome == 'failure'
+        run: exit 1
+      - name: Verify release metadata and checksums
+        if: steps.release-build.outcome == 'success'
+        env:
+          FACTORY_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          node - <<'NODE'
+          const metadata = require('./scripts/release-metadata');
+          const root = process.env.RUNNER_TEMP + '/release-assets';
+          metadata.verifyReleaseBundle(root, {
+            factoryVersion: process.env.FACTORY_RELEASE_VERSION,
+            repositoryCommit: process.env.FACTORY_SOURCE_COMMIT,
+          });
+          NODE
+      - name: Upload accepted release bundle
+        if: steps.release-build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-release-${{ inputs.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build-and-accept]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      FACTORY_RELEASE_VERSION: ${{ inputs.version }}
+      FACTORY_SOURCE_COMMIT: ${{ needs['build-and-accept'].outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: factory-release-${{ inputs.version }}-${{ github.run_id }}
+          path: release-assets
+      - name: Reverify accepted bundle
+        run: |
+          node - <<'NODE'
+          const path = require('node:path');
+          const metadata = require('./scripts/release-metadata');
+          const root = path.resolve('release-assets');
+          metadata.verifyReleaseBundle(root, {
+            factoryVersion: process.env.FACTORY_RELEASE_VERSION,
+            repositoryCommit: process.env.FACTORY_SOURCE_COMMIT,
+          });
+          NODE
+      - name: Create optional detached signatures
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_PASSPHRASE: ${{ secrets.RELEASE_SIGNING_PASSPHRASE }}
+        run: |
+          if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
+            printf '%s\n' 'No signing key configured; publishing checksum-only assets.'
+            exit 0
+          fi
+          printf '%s' "$RELEASE_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RELEASE_SIGNING_PASSPHRASE" \
+            --armor --detach-sign release-assets/checksums.txt
+      - name: Publish GitHub Release after acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(mktemp)
+          {
+            printf 'Unofficial Factory Desktop Linux build for Factory %s.\n\n' "$FACTORY_RELEASE_VERSION"
+            printf 'Acceptance metadata and checksum verification are included in the release assets.\n'
+            printf 'This release is checksum-only unless detached .asc files are present.\n'
+          } > "$notes"
+          gh release create "v$FACTORY_RELEASE_VERSION" release-assets/* \
+            --target "$FACTORY_SOURCE_COMMIT" \
+            --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION" \
+            --notes-file "$notes"

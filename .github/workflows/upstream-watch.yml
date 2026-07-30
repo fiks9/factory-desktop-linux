@@ -1,0 +1,101 @@
+name: Upstream Watch
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: factory-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: patcher/package-lock.json
+      - name: Install acceptance tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y 7zip
+          npm ci --prefix patcher --ignore-scripts
+      - name: Resolve accepted version
+        id: accepted
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          accepted=$(node -p "require('./release/accepted-upstream.json').acceptedVersion")
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          candidate=${tag#v}
+          if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            accepted=$(node -e "const {compareVersions}=require('./scripts/upstream-watch');process.stdout.write(compareVersions(process.argv[1],process.argv[2])>0?process.argv[1]:process.argv[2])" "$candidate" "$accepted")
+          fi
+          printf 'version=%s\n' "$accepted" >> "$GITHUB_OUTPUT"
+      - name: Restore content-addressed DMG cache
+        id: upstream-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/upstream-downloads
+          key: factory-upstream-dmg-${{ runner.os }}-${{ steps.accepted.outputs.version }}-run-${{ github.run_id }}
+          restore-keys: |
+            factory-upstream-dmg-${{ runner.os }}-${{ steps.accepted.outputs.version }}-
+      - name: Check and probe upstream
+        id: probe
+        continue-on-error: true
+        run: |
+          node scripts/upstream-watch.js \
+            --accepted-version "${{ steps.accepted.outputs.version }}" \
+            --probe \
+            --cache-dir "$PWD/.cache/upstream-downloads" \
+            --diagnostics-dir "$RUNNER_TEMP/factory-upstream-diagnostics" \
+            --output "$RUNNER_TEMP/upstream-result.json"
+      - name: Write summary contract
+        id: summary
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/watch-summary.js \
+            "$RUNNER_TEMP/upstream-result.json" \
+            "$RUNNER_TEMP/upstream-summary" \
+            "$RUN_URL"
+          cat "$RUNNER_TEMP/upstream-summary/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save newly downloaded content-addressed DMG
+        if: always() && steps.summary.outputs.cache_save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/upstream-downloads
+          key: factory-upstream-dmg-${{ runner.os }}-${{ steps.accepted.outputs.version }}-${{ steps.summary.outputs.cache_suffix }}
+      - name: Upload bounded patch diagnostics
+        if: always() && steps.probe.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-patch-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/factory-upstream-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Create or update upstream issue
+        if: always() && steps.summary.outputs.issue == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title=$(cat "$RUNNER_TEMP/upstream-summary/issue-title.txt")
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/upstream-summary/issue-body.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/upstream-summary/issue-body.md"
+          fi
+      - name: Enforce fail-closed verdict
+        if: always() && steps.probe.outcome == 'failure'
+        run: exit 1

@@ -6,6 +6,7 @@ const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout, sha256 } = require("./runtime");
 const { scanPackageTree, stageInstalledUpdateBuilder } = require("./package-hygiene");
+const { writePackageBuildInfo } = require("./release-metadata");
 
 const REQUIRED_PATCHES = [
   "daemon-transport-force-websocket",
@@ -101,6 +102,7 @@ function buildDeb(options) {
   fs.mkdirSync(path.join(root, "usr", "lib", "systemd", "user"), { recursive: true });
   fs.mkdirSync(path.join(root, "usr", "share", "polkit-1", "actions"), { recursive: true });
   copyRecursive(appDir, path.join(root, "opt", "Factory"));
+  writePackageBuildInfo(path.join(root, "opt", "Factory"), "deb");
 
   const desktop = path.resolve(__dirname, "..", "packaging", "linux", "factory-desktop.desktop");
   fs.copyFileSync(desktop, path.join(root, "usr", "share", "applications", "factory-desktop.desktop"));
