@@ -4,6 +4,13 @@ The release boundary trusts official Factory endpoints, repository-owned code at
 the selected commit, and blocking inspection results. DMG metadata, renderer text,
 user manifests, package exit codes, and caches remain untrusted until validated.
 
+Exact DMG acquisition is confined to HTTPS on `s3.us-west-1.amazonaws.com` and
+the `downloads.factory.ai/factory-desktop/releases/<version>/darwin/x64` object
+path derived only from a strictly parsed version. Every redirect is revalidated
+against the requested version and the same host/path contract. The mutable
+latest-version endpoint is used for discovery, not as an exact historical binary
+source.
+
 CI uses no `pull_request_target`. CI/build jobs have `contents: read`; only final
 publication has `contents: write`. Signing secrets, when configured, exist only
 there. The privileged job uses verifier code from the trusted workflow commit,

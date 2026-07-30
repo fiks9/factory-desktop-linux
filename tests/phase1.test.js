@@ -7,11 +7,15 @@ const path = require("node:path");
 const http = require("node:http");
 const { test, before, after } = require("node:test");
 const {
+  acquireExactDmg,
+  buildExactDownloadUrl,
   parseVersion,
   parseVersionFromUrl,
   discoverLatestVersion,
+  resolveOfficialDmgRedirect,
   streamToContentAddressed,
   cachePinnedDmg,
+  validateOfficialDmgUrl,
 } = require("../scripts/dmg");
 const { plistValue, validateDmgFile } = require("../scripts/extract-dmg");
 const { execFileSync } = require("node:child_process");
@@ -56,6 +60,54 @@ test("Factory endpoint version parsing is strict", () => {
 
 test("latest-version discovery reads the documented JSON contract", async () => {
   assert.equal(await discoverLatestVersion({ endpoint: `${baseUrl}/latest` }), "0.139.0");
+});
+
+test("exact Factory 0.139.0 acquisition uses the confined official versioned object", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-phase1-exact-"));
+  try {
+    const expectedUrl = "https://s3.us-west-1.amazonaws.com/downloads.factory.ai/factory-desktop/releases/0.139.0/darwin/x64/Factory-0.139.0-x64.dmg";
+    assert.equal(buildExactDownloadUrl("0.139.0"), expectedUrl);
+    const result = await acquireExactDmg({
+      version: "0.139.0",
+      cacheDir: root,
+      download: async (url, cacheDir, options) => {
+        assert.equal(url, expectedUrl);
+        assert.equal(cacheDir, root);
+        assert.equal(options.validateUrl(url), expectedUrl);
+        const file = path.join(root, `Factory-${"a".repeat(64)}.dmg`);
+        fs.writeFileSync(file, "exact fixture");
+        return { path: file, sha256: "a".repeat(64), bytes: 13, finalUrl: url };
+      },
+    });
+    assert.equal(result.version, "0.139.0");
+    assert.equal(result.source, "official");
+    assert.equal(result.finalUrl, expectedUrl);
+    assert.throws(() => buildExactDownloadUrl("latest"), /Invalid Factory version/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exact acquisition rejects a redirect from 0.139.0 to 0.140.0", () => {
+  const current = buildExactDownloadUrl("0.139.0");
+  const changed = buildExactDownloadUrl("0.140.0");
+  assert.throws(
+    () => resolveOfficialDmgRedirect(current, changed, "0.139.0"),
+    /official Factory DMG path|version/i,
+  );
+});
+
+test("exact acquisition rejects non-HTTPS, foreign hosts, paths, and query strings", () => {
+  const expected = buildExactDownloadUrl("0.139.0");
+  assert.equal(validateOfficialDmgUrl(expected, "0.139.0"), expected);
+  for (const invalid of [
+    expected.replace("https:", "http:"),
+    expected.replace("s3.us-west-1.amazonaws.com", "downloads.example.com"),
+    expected.replace("/downloads.factory.ai/", "/untrusted-bucket/"),
+    `${expected}?redirect=1`,
+  ]) {
+    assert.throws(() => validateOfficialDmgUrl(invalid, "0.139.0"), /official Factory DMG URL/i);
+  }
 });
 
 test("download streams into an immutable content-addressed cache", async () => {

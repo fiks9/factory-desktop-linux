@@ -52,9 +52,9 @@ test("upstream comparison accepts strict versions and only reports newer release
   assert.throws(() => classifyVersion("latest", "0.139.0"), /Invalid Factory version/);
 });
 
-test("upstream watch reuses an indexed content-addressed DMG without download", () => {
+test("upstream watch reuses an indexed content-addressed DMG without download", async () => {
   const { sha256File } = require("../scripts/dmg");
-  const { reuseIndexedDmg } = require("../scripts/upstream-watch");
+  const { acquireCachedOfficialDmg, reuseIndexedDmg } = require("../scripts/upstream-watch");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-upstream-cache-"));
   try {
     const temporary = path.join(root, "source.dmg");
@@ -62,16 +62,49 @@ test("upstream watch reuses an indexed content-addressed DMG without download", 
     const digest = sha256File(temporary);
     const cached = path.join(root, `Factory-${digest}.dmg`);
     fs.renameSync(temporary, cached);
-    fs.writeFileSync(path.join(root, "version-index.json"), `${JSON.stringify({ schemaVersion: 1, versions: { "0.140.0": digest } })}\n`);
-    assert.deepEqual(reuseIndexedDmg("0.140.0", root), {
+    fs.writeFileSync(path.join(root, "version-index.json"), `${JSON.stringify({ schemaVersion: 1, versions: { "0.139.0": digest } })}\n`);
+    assert.deepEqual(reuseIndexedDmg("0.139.0", root), {
       path: cached,
       sha256: digest,
       bytes: fs.statSync(cached).size,
-      version: "0.140.0",
+      version: "0.139.0",
       source: "official-cache",
     });
+    let downloads = 0;
+    const reused = await acquireCachedOfficialDmg("0.139.0", root, {
+      acquireDmg: async () => { downloads += 1; throw new Error("download must not run"); },
+    });
+    assert.equal(reused.sha256, digest);
+    assert.equal(downloads, 0);
     fs.writeFileSync(cached, "tampered");
-    assert.throws(() => reuseIndexedDmg("0.140.0", root), /hash mismatch/);
+    assert.throws(() => reuseIndexedDmg("0.139.0", root), /hash mismatch/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid exact-version DMG is never added to the accepted version index", async () => {
+  const { sha256File } = require("../scripts/dmg");
+  const { probeVersion, readVersionIndex } = require("../scripts/upstream-watch");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-upstream-invalid-acceptance-"));
+  const cacheDir = path.join(root, "cache");
+  try {
+    await assert.rejects(probeVersion({
+      version: "0.139.0",
+      cacheDir,
+      workRoot: root,
+      diagnosticsDir: path.join(root, "diagnostics"),
+      acquireDmg: async ({ version }) => {
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const temporary = path.join(cacheDir, "invalid.dmg");
+        fs.writeFileSync(temporary, "not a Factory DMG");
+        const sha256 = sha256File(temporary);
+        const destination = path.join(cacheDir, `Factory-${sha256}.dmg`);
+        fs.renameSync(temporary, destination);
+        return { path: destination, sha256, bytes: fs.statSync(destination).size, version, source: "official-versioned" };
+      },
+    }), /DMG|7z|archive|Can not open/i);
+    assert.deepEqual(readVersionIndex(cacheDir), { schemaVersion: 1, versions: {} });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -4,7 +4,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { acquireDmg, discoverLatestVersion, parseVersion, sha256File } = require("./dmg");
+const { acquireExactDmg, discoverLatestVersion, parseVersion, sha256File } = require("./dmg");
 const { extractDmg } = require("./extract-dmg");
 const { patchAsar } = require("../patcher/src/engine");
 const { writePatchDriftArtifacts } = require("./patch-diagnostics");
@@ -80,7 +80,7 @@ function writeVersionIndex(cacheDir, version, digest) {
 async function acquireCachedOfficialDmg(version, cacheDir, options = {}) {
   const cached = reuseIndexedDmg(version, cacheDir);
   if (cached) return cached;
-  const acquire = options.acquireDmg || acquireDmg;
+  const acquire = options.acquireDmg || acquireExactDmg;
   return acquire({ ...options, version, cacheDir });
 }
 

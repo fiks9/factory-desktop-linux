@@ -14,6 +14,14 @@ branch's history. The read-only build job downloads the official DMG, checks ver
 raw ASAR, validates required outcomes, builds all formats, extracts and inspects
 them, then verifies provenance and checksums.
 
+Release acquisition is deterministic and version-addressed. After strict
+version parsing, the downloader constructs the official object path
+`https://s3.us-west-1.amazonaws.com/downloads.factory.ai/factory-desktop/releases/<version>/darwin/x64/Factory-<version>-x64.dmg`.
+Only that HTTPS host and exact path are accepted; credentials, ports, query
+strings, fragments, foreign hosts, and redirects to another version are rejected.
+The latest-version API is discovery-only and is never substituted for an exact
+historical release source.
+
 The bundle contains exact-version `.deb`, `.rpm`, `.AppImage`, `checksums.txt`,
 release `build-info.json`, `patch-report.json`, `acceptance-summary.json`, and
 optional detached `.asc` signatures only when a signing key exists.
@@ -32,6 +40,11 @@ patcher commits, patcher version, run ID, timestamp, and architecture. Release
 metadata binds exact inspected filenames, sizes, formats, and hashes. Each
 package's extracted build metadata must equal the source provenance before the
 release manifest can be created.
+
+DMGs stream into the content-addressed cache as `Factory-<sha256>.dmg`. The
+version index is written only after the existing DMG acceptance has verified the
+embedded Factory version, required app structure, Electron metadata, and the
+downloaded SHA-256. Failed downloads and rejected DMGs remain unindexed.
 
 `checksums.txt` covers three packages and three JSON metadata files. Missing or
 extra filenames, paths, drift, and `latest`/`stable` aliases fail validation.

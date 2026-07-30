@@ -8,6 +8,11 @@ Check official metadata without credentials:
 node scripts/upstream-watch.js
 ```
 
+The watcher discovers a version through official metadata, then downloads that
+exact version from the official `downloads.factory.ai` S3 bucket. Do not replace
+the exact URL builder with the mutable latest-download redirect or hand-edit the
+cache index. Host/path/version drift fails closed.
+
 Build an authorized local DMG with an absolute path and exact version:
 
 ```bash
