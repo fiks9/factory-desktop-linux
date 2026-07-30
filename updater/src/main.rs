@@ -5,7 +5,7 @@ use factory_update_manager::approval::{
     NodeApprovalInspector,
 };
 use factory_update_manager::builder::{BuildRequest, NodeBuilder, PackageFormat};
-use factory_update_manager::cache::DmgCache;
+use factory_update_manager::cache::{candidate_id_for_digest, DmgCache};
 use factory_update_manager::cleanup::cleanup;
 use factory_update_manager::daemon::{blocks_new_candidate, read_check_interval_seconds};
 use factory_update_manager::diagnose::diagnose;
@@ -432,7 +432,7 @@ fn check_now(
                     ))?
                 }
             };
-            let candidate_id = format!("{}-{}", version, &dmg.sha256[..12]);
+            let candidate_id = candidate_id_for_digest(&dmg.sha256)?;
             let workspace = paths.workspaces_dir().join(&candidate_id);
             if workspace.exists() {
                 fs::remove_dir_all(&workspace)?;

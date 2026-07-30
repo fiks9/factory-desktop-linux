@@ -1,4 +1,4 @@
-use factory_update_manager::cache::{sha256_file, DmgCache, Workspace};
+use factory_update_manager::cache::{candidate_id_for_digest, sha256_file, DmgCache, Workspace};
 use factory_update_manager::cleanup::cleanup;
 use factory_update_manager::daemon::{
     blocks_new_candidate, read_check_interval_seconds, DEFAULT_CHECK_INTERVAL_SECONDS,
@@ -124,6 +124,42 @@ fn rejected_workspace_is_removed_but_persisted_workspace_remains() {
         workspace.persist();
     }
     assert!(accepted_path.exists());
+}
+
+#[test]
+fn production_dotted_version_candidate_uses_safe_digest_id() {
+    let root = tempfile::tempdir().unwrap();
+    let digest = "fcc9180c74d493aa418f445f3bc61099d53dd96a6f07451569cd4c2bbb239228";
+    let legacy_id = format!("0.140.0-{}", &digest[..12]);
+    assert!(Workspace::create(root.path(), &legacy_id).is_err());
+
+    let candidate_id = candidate_id_for_digest(digest).unwrap();
+
+    assert_eq!(candidate_id, format!("candidate-{digest}"));
+    let workspace = Workspace::create(root.path(), &candidate_id).unwrap();
+    assert!(workspace.path().starts_with(root.path()));
+}
+
+#[test]
+fn candidate_digest_requires_exact_lowercase_sha256() {
+    let valid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        candidate_id_for_digest(valid).unwrap(),
+        format!("candidate-{valid}")
+    );
+
+    for invalid in [
+        "",
+        "0123456789abcdef",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ABCDEf",
+        "../0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/..",
+    ] {
+        assert!(
+            candidate_id_for_digest(invalid).is_err(),
+            "accepted {invalid:?}"
+        );
+    }
 }
 
 #[test]

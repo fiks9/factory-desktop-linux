@@ -128,6 +128,26 @@ impl DmgCache {
     }
 }
 
+/// Derive a confined workspace identifier from a validated content digest.
+///
+/// Candidate identifiers must not contain a version string: semantic versions
+/// contain dots, while workspace names deliberately allow only safe path
+/// segment characters. The complete lowercase SHA-256 keeps the identifier
+/// collision-resistant without weakening that confinement rule.
+pub fn candidate_id_for_digest(digest: &str) -> io::Result<String> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "candidate digest must be a lowercase SHA-256",
+        ));
+    }
+    Ok(format!("candidate-{digest}"))
+}
+
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut input = File::open(path)?;
     let mut hash = Sha256::new();
