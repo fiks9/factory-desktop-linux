@@ -28,8 +28,8 @@ function assertNoTrackedGeneratedArtifacts() {
   if (forbidden.length) throw new Error(`Generated/proprietary artifacts are tracked: ${forbidden.join(", ")}`);
 }
 
-function runMake(args) {
-  execFileSync("make", args, { cwd: ROOT, stdio: "inherit", env: process.env });
+function runMake(args, env = process.env) {
+  execFileSync("make", args, { cwd: ROOT, stdio: "inherit", env });
 }
 
 function verifySyntheticReleaseBundle(dist) {
@@ -72,13 +72,14 @@ function main() {
   if (process.env.FACTORY_REQUIRE_CLEAN_GIT === "1" && before) throw new Error("Release checkout is not clean");
   assertNoTrackedGeneratedArtifacts();
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "factory-release-check-"));
+  const env = { ...process.env, TMPDIR: temporary };
   try {
-    runMake(["check"]);
-    runMake(["test"]);
+    runMake(["check"], env);
+    runMake(["test"], env);
     const dist = path.join(temporary, "dist");
-    runMake(["package-smoke", "VERSION=0.139.0", `DIST_DIR=${dist}`]);
+    runMake(["package-smoke", "VERSION=0.139.0", `DIST_DIR=${dist}`], env);
     verifySyntheticReleaseBundle(dist);
-    runMake(["test-real-bundles"]);
+    runMake(["test-real-bundles"], env);
     execFileSync("git", ["diff", "--check"], { cwd: ROOT, stdio: "inherit" });
     assertNoTrackedGeneratedArtifacts();
   } finally {
