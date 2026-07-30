@@ -75,6 +75,10 @@ impl Paths {
         self.state_dir.join("daemon.lock")
     }
 
+    pub fn after_exit_lock_file(&self) -> PathBuf {
+        self.state_dir.join("after-exit.lock")
+    }
+
     pub fn downloads_dir(&self) -> PathBuf {
         self.cache_dir.join("downloads")
     }

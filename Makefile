@@ -6,7 +6,7 @@ check: lint typecheck bash-check rust-check
 
 test:
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
-	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js tests/package-hygiene.test.js
+	@node --test patcher/tests/contract.test.js patcher/tests/patcher.test.js tests/phase1.test.js tests/package-hygiene.test.js tests/update-bridge.test.js
 
 test-real-bundles: updater
 	@npm ci --prefix patcher --ignore-scripts >/dev/null
@@ -20,6 +20,7 @@ lint:
 	@node --check scripts/phase0-check.js
 	@for file in scripts/*.js; do node --check "$$file"; done
 	@node --check patcher/src/contract.js
+	@node --check packaging/linux/update-bridge.cjs
 
 typecheck:
 	@node scripts/phase0-check.js typecheck

@@ -10,8 +10,38 @@ const {
   assertAllowedNativePayload,
   assertExactDebMaintainerScripts,
   assertNativePackageMetadata,
+  assertNativeUpdaterBridge,
   assertRpmScriptlets,
 } = require("../scripts/inspect-package");
+
+test("native updater bridge is fixed, read-only, and absent from AppImage", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-update-bridge-"));
+  try {
+    const bridge = path.join(root, "usr", "lib", "factory-desktop", "update-bridge.cjs");
+    const policy = path.join(root, "usr", "share", "polkit-1", "actions", "org.factory.desktop.update-manager.policy");
+    fs.mkdirSync(path.dirname(bridge), { recursive: true });
+    fs.mkdirSync(path.dirname(policy), { recursive: true });
+    fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "update-bridge.cjs"), bridge);
+    fs.chmodSync(bridge, 0o644);
+    fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "org.factory.desktop.update-manager.policy"), policy);
+    assert.doesNotThrow(() => assertNativeUpdaterBridge(root, "deb"));
+
+    const builderCopy = path.join(root, "usr", "lib", "factory-desktop", "update-builder", "packaging", "linux", "update-bridge.cjs");
+    fs.mkdirSync(path.dirname(builderCopy), { recursive: true });
+    fs.copyFileSync(bridge, builderCopy);
+    assert.doesNotThrow(() => assertNativeUpdaterBridge(root, "rpm"));
+    const unexpectedCopy = path.join(root, "usr", "share", "factory-desktop", "update-bridge.cjs");
+    fs.mkdirSync(path.dirname(unexpectedCopy), { recursive: true });
+    fs.copyFileSync(bridge, unexpectedCopy);
+    assert.throws(() => assertNativeUpdaterBridge(root, "deb"), /fixed package path/);
+    fs.rmSync(unexpectedCopy);
+
+    fs.chmodSync(bridge, 0o664);
+    assert.throws(() => assertNativeUpdaterBridge(root, "rpm"), /0644/);
+    fs.chmodSync(bridge, 0o644);
+    assert.throws(() => assertNativeUpdaterBridge(root, "appimage"), /must not contain/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("hygiene gate rejects absolute CI .bin symlinks", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-broken-link-"));

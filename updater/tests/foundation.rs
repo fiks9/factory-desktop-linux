@@ -51,6 +51,37 @@ fn corrupt_state_is_an_error_instead_of_idle() {
 }
 
 #[test]
+fn schema_one_state_migrates_to_schema_two_defaults() {
+    let root = tempfile::tempdir().unwrap();
+    let state_file = root.path().join("state.json");
+    fs::write(
+        &state_file,
+        r#"{
+  "schema_version": 1,
+  "state": "ready-pending-exit",
+  "updated_at": "2026-07-30T00:00:00Z",
+  "candidate_id": "candidate-139",
+  "version": "0.139.0",
+  "manual_action_required": false
+}"#,
+    )
+    .unwrap();
+
+    let state = StateStore::new(state_file).load().unwrap();
+
+    assert_eq!(state.schema_version, 2);
+    assert_eq!(state.state, State::ReadyPendingExit);
+    assert_eq!(state.candidate_id.as_deref(), Some("candidate-139"));
+    assert_eq!(state.manual_command, None);
+    assert_eq!(state.notification_dedupe_key, None);
+    assert!(!state.install_requested);
+    assert_eq!(state.approval_id, None);
+    assert_eq!(state.approval_expires_at, None);
+    assert!(!state.relaunch_pending);
+    assert_eq!(state.relaunch_error, None);
+}
+
+#[test]
 fn update_lock_is_exclusive() {
     let root = tempfile::tempdir().unwrap();
     let lock_path = root.path().join("manager.lock");

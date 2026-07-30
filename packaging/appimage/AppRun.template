@@ -6,7 +6,6 @@ export FACTORY_DISABLE_KEYRING=1
 
 # AppImage never adopts a system native-package updater.
 export FACTORY_UPDATE_MANAGER_UNAVAILABLE=1
-export FACTORY_UPDATE_MANAGER_PATH="$APPDIR/.factory-no-native-updater"
 
 if [[ "${1:-}" == --install-desktop-integration ]]; then
   appimage_path="${APPIMAGE:-}"
@@ -16,7 +15,7 @@ if [[ "${1:-}" == --install-desktop-integration ]]; then
   fi
   applications="$HOME/.local/share/applications"
   mkdir -p "$applications"
-  sed "s|^Exec=.*|Exec=env FACTORY_DISABLE_KEYRING=1 FACTORY_UPDATE_MANAGER_PATH=$APPDIR/.factory-no-native-updater $appimage_path %U|" \
+  sed "s|^Exec=.*|Exec=env FACTORY_DISABLE_KEYRING=1 FACTORY_UPDATE_MANAGER_UNAVAILABLE=1 $appimage_path %U|" \
     "$APPDIR/factory-desktop.desktop" > "$applications/factory-desktop.desktop"
   update-desktop-database "$applications" >/dev/null 2>&1 || true
   xdg-mime default factory-desktop.desktop x-scheme-handler/factory-desktop >/dev/null 2>&1 || true

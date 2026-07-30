@@ -9,12 +9,19 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/factory-update-manager</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">install-deb</annotate>
   </action>
-  <action id="org.factory.desktop.update-manager.install-validated-package">
-    <description>Install a locally validated Factory Desktop update</description>
-    <message>Install a locally validated Factory Desktop update.</message>
+  <action id="org.factory.desktop.update-manager.approve-candidate">
+    <description>Approve and stage a validated Factory Desktop update</description>
+    <message>Authentication is required to create a root-owned Factory Desktop approval.</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/factory-update-manager</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">approve-candidate</annotate>
+  </action>
+  <action id="org.factory.desktop.update-manager.install-approved-package">
+    <description>Install a root-approved Factory Desktop update</description>
+    <message>Approved package installation remains disabled pending privileged live review.</message>
     <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>no</allow_active></defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/factory-update-manager</annotate>
-    <annotate key="org.freedesktop.policykit.exec.argv1">install-validated-package</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install-approved-package</annotate>
   </action>
   <action id="org.factory.desktop.update-manager.install-rpm">
     <description>Install a validated Factory Desktop RPM update</description>

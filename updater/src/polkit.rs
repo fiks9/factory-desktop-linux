@@ -1,5 +1,7 @@
 use crate::builder::PackageFormat;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
 
@@ -9,18 +11,15 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub enum Action {
     InstallDeb,
     InstallRpm,
-    InstallValidatedPackage,
+    ApproveCandidate,
+    InstallApprovedPackage,
 }
 
 impl Action {
-    pub fn for_install(format: PackageFormat, unattended: bool) -> Self {
-        if unattended {
-            Self::InstallValidatedPackage
-        } else {
-            match format {
-                PackageFormat::Deb => Self::InstallDeb,
-                PackageFormat::Rpm => Self::InstallRpm,
-            }
+    pub fn for_install(format: PackageFormat, _unattended: bool) -> Self {
+        match format {
+            PackageFormat::Deb => Self::InstallDeb,
+            PackageFormat::Rpm => Self::InstallRpm,
         }
     }
 
@@ -28,8 +27,9 @@ impl Action {
         match self {
             Self::InstallDeb => "org.factory.desktop.update-manager.install-deb",
             Self::InstallRpm => "org.factory.desktop.update-manager.install-rpm",
-            Self::InstallValidatedPackage => {
-                "org.factory.desktop.update-manager.install-validated-package"
+            Self::ApproveCandidate => "org.factory.desktop.update-manager.approve-candidate",
+            Self::InstallApprovedPackage => {
+                "org.factory.desktop.update-manager.install-approved-package"
             }
         }
     }
@@ -38,9 +38,57 @@ impl Action {
         match self {
             Self::InstallDeb => "install-deb",
             Self::InstallRpm => "install-rpm",
-            Self::InstallValidatedPackage => "install-validated-package",
+            Self::ApproveCandidate => "approve-candidate",
+            Self::InstallApprovedPackage => "install-approved-package",
         }
     }
+}
+
+pub fn write_unattended_opt_in(config: &Path) -> Result<(), Error> {
+    let parent = config.parent().ok_or("config path has no parent")?;
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let existing = fs::read_to_string(config).unwrap_or_default();
+    let mut found = false;
+    let mut lines = Vec::new();
+    for line in existing.lines() {
+        if line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .starts_with("unattended")
+        {
+            if found {
+                continue;
+            }
+            lines.push("unattended = true".to_owned());
+            found = true;
+        } else {
+            lines.push(line.to_owned());
+        }
+    }
+    if !found {
+        lines.push("unattended = true".to_owned());
+    }
+    let partial = parent.join(format!(".config-{}.partial", std::process::id()));
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&partial)?;
+    let result = (|| -> std::io::Result<()> {
+        output.write_all(lines.join("\n").as_bytes())?;
+        output.write_all(b"\n")?;
+        output.sync_all()?;
+        fs::rename(&partial, config)?;
+        fs::set_permissions(config, fs::Permissions::from_mode(0o600))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result?;
+    Ok(())
 }
 
 pub fn read_unattended(config: &Path) -> Result<bool, Error> {

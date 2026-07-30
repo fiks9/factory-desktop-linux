@@ -41,12 +41,26 @@ pub struct StateRecord {
     pub message: Option<String>,
     #[serde(default)]
     pub manual_action_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_dedupe_key: Option<String>,
+    #[serde(default)]
+    pub install_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub relaunch_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relaunch_error: Option<String>,
 }
 
 impl Default for StateRecord {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             state: State::Idle,
             updated_at: Utc::now(),
             candidate_id: None,
@@ -56,6 +70,13 @@ impl Default for StateRecord {
             candidate_manifest: None,
             message: None,
             manual_action_required: false,
+            manual_command: None,
+            notification_dedupe_key: None,
+            install_requested: false,
+            approval_id: None,
+            approval_expires_at: None,
+            relaunch_pending: false,
+            relaunch_error: None,
         }
     }
 }
@@ -79,8 +100,10 @@ impl StateStore {
             return Ok(StateRecord::default());
         }
         let bytes = fs::read(&self.path)?;
-        let record: StateRecord = serde_json::from_slice(&bytes)?;
-        if record.schema_version != 1 {
+        let mut record: StateRecord = serde_json::from_slice(&bytes)?;
+        if record.schema_version == 1 {
+            record.schema_version = 2;
+        } else if record.schema_version != 2 {
             return Err(format!(
                 "unsupported state schema version: {}",
                 record.schema_version
@@ -91,6 +114,12 @@ impl StateStore {
     }
 
     pub fn save(&self, record: &StateRecord) -> io::Result<()> {
+        if record.schema_version != 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state writes require schema version 2",
+            ));
+        }
         let parent = self.path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

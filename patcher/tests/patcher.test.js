@@ -23,7 +23,7 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}`;
 }
 
 test("raw hardcoded transport bundle patches all required descriptors", async () => {
@@ -50,6 +50,32 @@ test("statsig resolver uses the structural matcher", async () => {
   const resolver = patched.match(/async function XX\(\)\{const e=YY\.DesktopDaemonIpc;return TT\.WebSocket\}/)?.[0];
   assert.ok(resolver);
   assert.doesNotThrow(() => new Function(`${resolver};`));
+});
+
+test("native updater patch loads the package bridge once and replaces all IPC handlers", async () => {
+  const { asarPath } = await fixture(rawBundle());
+  await patchAsar({ asarPath });
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+  assert.equal((patched.match(/\/usr\/lib\/factory-desktop\/update-bridge\.cjs/g) || []).length, 1);
+  assert.match(patched, /FACTORY_UPDATE_MANAGER_UNAVAILABLE/);
+  assert.match(patched, /linuxState:"update-manager-unavailable"/);
+  for (const action of ["getState", "install", "checkNow"]) {
+    assert.equal((patched.match(new RegExp(`\\.dispatch\\(\\"${action}\\"`, "g")) || []).length, 1, action);
+  }
+  assert.doesNotMatch(patched, /legacy(?:GetState|Install|CheckNow)/);
+});
+
+test("native updater patch fails closed when the IPC contract drifts", async () => {
+  const missing = rawBundle().replace('W.ipcMain.handle("updates:install",async()=>legacyInstall());', "");
+  const missingFixture = await fixture(missing);
+  await assert.rejects(() => patchAsar({ asarPath: missingFixture.asarPath }), /linux-native-updater-button/);
+
+  const duplicate = rawBundle().replace(
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());',
+    'W.ipcMain.handle("updates:getState",async()=>legacyGetState());W.ipcMain.handle("updates:getState",async()=>duplicateState());',
+  );
+  const duplicateFixture = await fixture(duplicate);
+  await assert.rejects(() => patchAsar({ asarPath: duplicateFixture.asarPath }), /linux-native-updater-button/);
 });
 
 test("garbage bundle fails closed on the first required patch", async () => {

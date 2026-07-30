@@ -97,10 +97,92 @@ function autoUpdater(files) {
   return result(id, matched, changes.length>0, changes.length===0&&matched, changes, { calls: changes.length });
 }
 
+function matchingParen(content, opening) {
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let depth = 0;
+  for (let index = opening; index < content.length; index += 1) {
+    const char = content[index];
+    const next = content[index + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") { blockComment = false; index += 1; }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "/" && next === "/") { lineComment = true; index += 1; continue; }
+    if (char === "/" && next === "*") { blockComment = true; index += 1; continue; }
+    if (char === '"' || char === "'" || char === "`") { quote = char; continue; }
+    if (char === "(") depth += 1;
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function ipcHandlers(files, channel) {
+  const matches = [];
+  const pattern = new RegExp(`([\\w$]+)\\.ipcMain\\.handle\\((["'])updates:${channel}\\2\\s*,`, "g");
+  for (const file of files) {
+    for (const match of file.content.matchAll(pattern)) {
+      const opening = match.index + match[0].indexOf("(");
+      const end = matchingParen(file.content, opening);
+      matches.push({ file, alias: match[1], start: match.index, end: end < 0 ? end : end + 1 });
+    }
+  }
+  return matches;
+}
+
 function nativeUpdater(files) {
-  const id="linux-native-updater-button"; const marker=MARKER(id); const changes=[]; let matched=false;
-  for(const file of files){let content=file.content;if(content.includes(marker))return result(id,true,false,true,[],{file:file.path});if(!/[\w$]+\.autoUpdater\.checkForUpdates\(\)/.test(content))continue;matched=true;content=content.replace(/([\w$]+)\.autoUpdater\.checkForUpdates\(\)/g,(_call,electronAlias)=>`${marker}(process.platform==="linux"?(()=>{const fs=require("fs"),cp=require("child_process"),helper=process.env.FACTORY_UPDATE_MANAGER_PATH||"/usr/bin/factory-update-manager";try{if(!fs.existsSync(helper)){console.info("update-manager-unavailable");return false}const child=cp.spawn(helper,["check-now"],{detached:true,stdio:"ignore"});child.unref();return true}catch(e){console.info("update-manager-unavailable",e);return false}})():${electronAlias}.autoUpdater.checkForUpdates())`);changes.push([file.path,content])}
-  return result(id,matched,changes.length>0,changes.length===0&&matched,changes,{helper:"FACTORY_UPDATE_MANAGER_PATH",appImageState:"update-manager-unavailable"});
+  const id = "linux-native-updater-button";
+  const marker = MARKER(id);
+  const existing = files.find((file) => file.content.includes(marker));
+  if (existing) return result(id, true, false, true, [], { file: existing.path });
+  const channels = [
+    ["getState", "getState"],
+    ["install", "install"],
+    ["checkNow", "checkNow"],
+  ];
+  const found = channels.map(([channel, action]) => ({ channel, action, matches: ipcHandlers(files, channel) }));
+  if (found.some((entry) => entry.matches.length !== 1 || entry.matches[0].end < 0)) {
+    return result(id, false, false, false, [], {
+      handlerCounts: Object.fromEntries(found.map((entry) => [entry.channel, entry.matches.length])),
+    });
+  }
+  const target = found[0].matches[0].file;
+  const alias = found[0].matches[0].alias;
+  if (found.some((entry) => entry.matches[0].file !== target || entry.matches[0].alias !== alias)) {
+    return result(id, false, false, false, [], { error: "update IPC handlers do not share one Electron contract" });
+  }
+  const bridgeName = "factoryLinuxUpdateBridge";
+  const replacements = found
+    .map((entry) => ({ ...entry.matches[0], action: entry.action }))
+    .sort((left, right) => right.start - left.start);
+  let content = target.content;
+  for (const handler of replacements) {
+    const replacement = `${alias}.ipcMain.handle("updates:${handler.action}",()=>${bridgeName}.dispatch("${handler.action}",{}))`;
+    content = `${content.slice(0, handler.start)}${replacement}${content.slice(handler.end)}`;
+  }
+  const insertion = Math.min(...replacements.map((handler) => handler.start));
+  const loader = `${marker}const ${bridgeName}=process.env.FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"?{dispatch:async()=>{const state={schemaVersion:1,kind:"error",linuxState:"update-manager-unavailable",message:"Native updates are unavailable in AppImage"};for(const window of ${alias}.BrowserWindow.getAllWindows())window.isDestroyed()||window.webContents.send("updates:state",state);return state}}:require("/usr/lib/factory-desktop/update-bridge.cjs").createBridge({electron:${alias}});`;
+  content = `${content.slice(0, insertion)}${loader}${content.slice(insertion)}`;
+  return result(id, true, true, false, [[target.path, content]], {
+    file: target.path,
+    bridge: "/usr/lib/factory-desktop/update-bridge.cjs",
+    handlers: channels.map(([channel]) => channel),
+  });
 }
 
 module.exports = { daemonTransport, preventListen, systemDroid, adoption, autoUpdater, nativeUpdater };

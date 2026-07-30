@@ -9,10 +9,11 @@ Generated and proprietary-derived payloads are deliberately gitignored.
 
 ## Status
 
-Phase 4 is in progress: deterministic DMG acquisition, Linux runtime staging,
+Phase 5 is in progress: deterministic DMG acquisition, Linux runtime staging,
 fail-closed ASAR patching, package hygiene, `.deb`/`.rpm`/AppImage packaging,
-and a native Rust update-manager MVP are in place. Native packages include the
-updater and an isolated Node update-builder; AppImage remains portable and
+and the native Rust update lifecycle are in place. Native packages include a
+fixed Electron status bridge, controlled after-exit install/relaunch, desktop
+notifications, and root-owned approval records. AppImage remains portable and
 reports the native updater as unavailable.
 
 ## Design Rules
@@ -23,9 +24,12 @@ reports the native updater as unavailable.
 - Native packages use a `systemd --user` updater; AppImage does not assume a
   system-installed updater helper exists.
 - The default privileged update path requires a graphical polkit agent or
-  reports an explicit terminal fallback. Unattended configuration is opt-in,
-  but passwordless root installation remains disabled until Phase 5 adds
-  root-side approval and attestation.
+  reports an explicit terminal fallback. Root-owned approval and replay
+  prevention are implemented, but `install-approved-package` remains
+  `allow_active=no` pending a separate privileged live E2E verdict.
+- `unattended = true` is explicit opt-in to approval request architecture; it
+  does not bypass authentication. This project does not claim fully unattended
+  updates yet.
 
 ## Planned Formats
 

@@ -1,4 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use factory_update_manager::after_exit::{run_after_exit, AfterExitBackend, AfterExitOptions};
+use factory_update_manager::approval::{
+    load_approval_request, write_approval_request, ApprovalRequest, ApprovalStore,
+    NodeApprovalInspector,
+};
 use factory_update_manager::builder::{BuildRequest, NodeBuilder, PackageFormat};
 use factory_update_manager::cache::DmgCache;
 use factory_update_manager::cleanup::cleanup;
@@ -6,18 +11,21 @@ use factory_update_manager::daemon::{blocks_new_candidate, read_check_interval_s
 use factory_update_manager::diagnose::diagnose;
 use factory_update_manager::install::{install_validated, InstallOutcome};
 use factory_update_manager::locks::UpdateLock;
-use factory_update_manager::notify::notify;
+use factory_update_manager::notify::{notify_once, DesktopNotifications, NotificationEvent};
 use factory_update_manager::package_manager::{NativePackageManager, PackageManager};
 use factory_update_manager::paths::Paths;
-use factory_update_manager::polkit::{read_unattended, request_polkit_install, Action};
+use factory_update_manager::polkit::{
+    read_unattended, request_polkit_install, write_unattended_opt_in, Action,
+};
 use factory_update_manager::rollback::KnownGoodStore;
 use factory_update_manager::state::{State, StateRecord, StateStore};
 use factory_update_manager::upstream::UpstreamClient;
 use std::env::current_exe;
 use std::ffi::OsString;
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process;
+use std::process::{self, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -62,14 +70,33 @@ enum Commands {
     },
     Diagnose,
     InstallReady,
+    PrepareInstall {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long, hide = true)]
+        no_spawn: bool,
+    },
+    #[command(hide = true)]
+    AfterExit {
+        #[arg(long)]
+        pid: u32,
+    },
+    ReconcileInstall,
+    SetupUnattended {
+        #[arg(long)]
+        acknowledge_authentication_required: bool,
+    },
     InstallDeb {
         manifest: PathBuf,
     },
     InstallRpm {
         manifest: PathBuf,
     },
-    InstallValidatedPackage {
-        manifest: PathBuf,
+    ApproveCandidate {
+        request: PathBuf,
+    },
+    InstallApprovedPackage {
+        approval_id: String,
     },
     Rollback,
     Daemon {
@@ -123,32 +150,204 @@ fn run(cli: Cli) -> Result<(), Error> {
             version,
             format,
         } => check_now(&context, Some(dmg), Some(version), format.map(Into::into)),
-        Commands::Status { json: _ } => with_user_state(|_, store, state| {
-            print_json(&serde_json::json!({
-                "schemaVersion": 1,
-                "state": state,
-                "stateFile": store.path()
-            }))
-        }),
+        Commands::Status { json: _ } => {
+            with_user_state(|_, store, state| print_json(&status_view(store, &state)))
+        }
         Commands::Diagnose => {
             with_user_state(|paths, _, state| print_json(&diagnose(paths, &state)))
         }
         Commands::InstallReady => install_ready(&context),
+        Commands::PrepareInstall { pid, no_spawn } => prepare_install(pid, no_spawn),
+        Commands::AfterExit { pid } => after_exit(&context, pid),
+        Commands::ReconcileInstall => reconcile_install(),
+        Commands::SetupUnattended {
+            acknowledge_authentication_required,
+        } => setup_unattended(acknowledge_authentication_required),
         Commands::InstallDeb { manifest } => {
             privileged_install(&context, manifest, PackageFormat::Deb)
         }
         Commands::InstallRpm { manifest } => {
             privileged_install(&context, manifest, PackageFormat::Rpm)
         }
-        Commands::InstallValidatedPackage { manifest } => privileged_install(
-            &context,
-            manifest.clone(),
-            factory_update_manager::builder::load_candidate_manifest(&manifest)?.format,
-        ),
+        Commands::ApproveCandidate { request } => privileged_approve_candidate(request),
+        Commands::InstallApprovedPackage { approval_id } => {
+            privileged_install_approved(&approval_id)
+        }
         Commands::Rollback => privileged_rollback(),
         Commands::Daemon { once } => run_daemon(&context, once),
         Commands::Service => run_daemon(&context, false),
     }
+}
+
+fn setup_unattended(acknowledged: bool) -> Result<(), Error> {
+    if !acknowledged {
+        return Err("refusing unattended opt-in without --acknowledge-authentication-required; this architecture does not bypass polkit authentication".into());
+    }
+    let paths = Paths::resolve(None)?;
+    paths.ensure_all()?;
+    write_unattended_opt_in(&paths.config_dir.join("config.toml"))?;
+    print_json(&serde_json::json!({
+        "unattended": true,
+        "passwordless": false,
+        "approvalPolicy": "inactive-pending-privileged-live-review"
+    }))
+}
+
+fn prepare_install(parent_pid: u32, no_spawn: bool) -> Result<(), Error> {
+    with_locked_user_state(|_, store, mut state| {
+        if state.state != State::ReadyPendingExit {
+            return Err("no validated update is ready for after-exit installation".into());
+        }
+        if state.install_requested {
+            return Err("an after-exit installation request already exists".into());
+        }
+        state.install_requested = true;
+        state.relaunch_error = None;
+        state.updated_at = chrono::Utc::now();
+        store.save(&state)?;
+        if !no_spawn {
+            if let Err(error) = spawn_after_exit(parent_pid) {
+                state.install_requested = false;
+                state.relaunch_error = Some(format!("could not start after-exit helper: {error}"));
+                store.save(&state)?;
+                return Err(error);
+            }
+        }
+        print_json(&status_view(store, &state))
+    })
+}
+
+fn spawn_after_exit(parent_pid: u32) -> Result<(), Error> {
+    let mut command = Command::new(current_exe()?);
+    command
+        .arg("after-exit")
+        .arg("--pid")
+        .arg(parent_pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn()?;
+    Ok(())
+}
+
+struct NativeAfterExitBackend<'a> {
+    context: &'a Context,
+    store: &'a StateStore,
+}
+
+impl AfterExitBackend for NativeAfterExitBackend<'_> {
+    fn factory_running(&self, parent_pid: u32) -> bool {
+        Path::new("/proc").join(parent_pid.to_string()).exists() || app_is_running()
+    }
+
+    fn wait(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+
+    fn install_ready(&self) -> Result<State, factory_update_manager::after_exit::Error> {
+        install_ready(self.context)?;
+        Ok(self.store.load()?.state)
+    }
+
+    fn relaunch(&self, launcher: &Path) -> Result<(), factory_update_manager::after_exit::Error> {
+        if launcher != Path::new("/opt/Factory/factory-desktop-launcher") {
+            return Err("refusing to relaunch an unexpected executable".into());
+        }
+        let mut command = Command::new(launcher);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn()?;
+        Ok(())
+    }
+}
+
+fn after_exit(context: &Context, parent_pid: u32) -> Result<(), Error> {
+    let paths = Paths::resolve(None)?;
+    paths.ensure_all()?;
+    let store = StateStore::new(paths.state_file());
+    let backend = NativeAfterExitBackend {
+        context,
+        store: &store,
+    };
+    let result = run_after_exit(
+        &paths,
+        &store,
+        &AfterExitOptions {
+            parent_pid,
+            timeout: Duration::from_secs(120),
+            poll_interval: Duration::from_millis(500),
+            launcher: PathBuf::from("/opt/Factory/factory-desktop-launcher"),
+        },
+        &backend,
+    );
+    if result.is_err() {
+        let _state_lock = UpdateLock::acquire(&paths.state_lock_file())?;
+        let mut state = store.load()?;
+        if matches!(state.state, State::Installed | State::RolledBack)
+            && state.relaunch_error.is_some()
+        {
+            notify_once(
+                &store,
+                &mut state,
+                NotificationEvent::RelaunchFailed,
+                "Factory Desktop could not restart",
+                "The update is verified. Start Factory Desktop manually and review updater status.",
+                &DesktopNotifications,
+            )?;
+        }
+    }
+    result
+}
+
+fn reconcile_install() -> Result<(), Error> {
+    with_locked_user_state(|_, store, mut state| {
+        if state.state != State::InstallFailedManualAction {
+            return Err("no manual installation is waiting for reconciliation".into());
+        }
+        let expected = state
+            .version
+            .clone()
+            .ok_or("manual installation has no expected candidate version")?;
+        let manager = NativePackageManager::detect()?;
+        match manager.installed_version()? {
+            Some(version) if version == expected => {
+                state.manual_command = None;
+                state.install_requested = false;
+                transition(
+                    store,
+                    &mut state,
+                    State::Installed,
+                    "manual installation verified by the package manager",
+                )?;
+                print_json(&status_view(store, &state))
+            }
+            Some(version) => Err(format!(
+                "manual installation verification failed: expected {expected}, got {version}"
+            )
+            .into()),
+            None => {
+                Err("manual installation verification failed: Factory Desktop is absent".into())
+            }
+        }
+    })
 }
 
 fn with_user_state<T>(
@@ -270,6 +469,15 @@ fn check_now(
                 State::Validating,
                 "package inspector accepted candidate",
             )?;
+            if read_unattended(&paths.config_dir.join("config.toml"))? {
+                let request = ApprovalRequest::from_candidate(&candidate)?;
+                let request_path = candidate
+                    .manifest_path
+                    .parent()
+                    .ok_or("candidate manifest has no workspace")?
+                    .join("approval-request.json");
+                write_approval_request(&request_path, &request)?;
+            }
             state.candidate_id = Some(candidate_id);
             state.version = Some(candidate.version);
             state.package_path = Some(candidate.package_path);
@@ -281,17 +489,28 @@ fn check_now(
                 State::ReadyPendingExit,
                 "validated update is ready; install only after Factory Desktop exits",
             )?;
-            notify(
+            notify_once(
+                store,
+                &mut state,
+                NotificationEvent::Ready,
                 "Factory Desktop update ready",
                 "Restart Factory Desktop to install the validated update.",
-            );
+                &DesktopNotifications,
+            )?;
             print_json(&state)
         })();
         if let Err(error) = &result {
             let message = format!("candidate rejected: {error}");
             transition(store, &mut state, State::Failed, &message)?;
             cleanup(paths, &state)?;
-            notify("Factory Desktop update rejected", &message);
+            notify_once(
+                store,
+                &mut state,
+                NotificationEvent::Rejected,
+                "Factory Desktop update rejected",
+                &message,
+                &DesktopNotifications,
+            )?;
         }
         result
     })
@@ -350,41 +569,128 @@ fn install_ready(_context: &Context) -> Result<(), Error> {
             State::Installing,
             "requesting one privileged installation",
         )?;
+        state.manual_command = None;
         match request_polkit_install(action, &current_exe()?, &manifest) {
             Ok(stdout) => match parse_install_outcome(&stdout).as_deref() {
-                Some("Installed") => transition(
-                    store,
-                    &mut state,
-                    State::Installed,
-                    "package manager accepted the validated update",
-                )?,
-                Some("RolledBack") => transition(
-                    store,
-                    &mut state,
-                    State::RolledBack,
-                    "installation failed and known-good rollback was installed",
-                )?,
-                _ => transition(
-                    store,
-                    &mut state,
-                    State::InstallFailedManualAction,
-                    "privileged helper did not report a successful install outcome",
-                )?,
+                Some("Installed") => {
+                    transition(
+                        store,
+                        &mut state,
+                        State::Installed,
+                        "package manager accepted the validated update",
+                    )?;
+                    notify_once(
+                        store,
+                        &mut state,
+                        NotificationEvent::Installed,
+                        "Factory Desktop updated",
+                        "The validated update was installed.",
+                        &DesktopNotifications,
+                    )?;
+                }
+                Some("RolledBack") => {
+                    transition(
+                        store,
+                        &mut state,
+                        State::RolledBack,
+                        "installation failed and known-good rollback was installed",
+                    )?;
+                    notify_once(
+                        store,
+                        &mut state,
+                        NotificationEvent::RolledBack,
+                        "Factory Desktop rollback completed",
+                        "The previous verified version was restored.",
+                        &DesktopNotifications,
+                    )?;
+                }
+                _ => {
+                    state.manual_command = Some(format!(
+                        "sudo {} {} {}",
+                        current_exe()?.display(),
+                        action.command(),
+                        manifest.display()
+                    ));
+                    transition(
+                        store,
+                        &mut state,
+                        State::InstallFailedManualAction,
+                        "privileged helper did not report a successful install outcome",
+                    )?;
+                    notify_once(
+                        store,
+                        &mut state,
+                        NotificationEvent::ManualAction,
+                        "Factory Desktop update needs manual action",
+                        "Open Factory Desktop updates to copy the validated command.",
+                        &DesktopNotifications,
+                    )?;
+                }
             },
-            Err(_) => transition(
-                store,
-                &mut state,
-                State::InstallFailedManualAction,
-                &format!(
-                    "polkit was unavailable or denied; terminal fallback: sudo {} {} {}",
+            Err(_) => {
+                state.manual_command = Some(format!(
+                    "sudo {} {} {}",
                     current_exe()?.display(),
                     action.command(),
                     manifest.display()
-                ),
-            )?,
+                ));
+                transition(
+                    store,
+                    &mut state,
+                    State::InstallFailedManualAction,
+                    "polkit was unavailable or denied; copy the validated manual command",
+                )?;
+                notify_once(
+                    store,
+                    &mut state,
+                    NotificationEvent::ManualAction,
+                    "Factory Desktop update needs manual action",
+                    "Open Factory Desktop updates to copy the validated command.",
+                    &DesktopNotifications,
+                )?;
+            }
         }
         print_json(&state)
     })
+}
+
+fn approval_inspector() -> NodeApprovalInspector {
+    NodeApprovalInspector::new(
+        PathBuf::from("/usr/lib/factory-desktop/update-builder"),
+        PathBuf::from("/usr/bin/node"),
+    )
+}
+
+fn privileged_approve_candidate(request_path: PathBuf) -> Result<(), Error> {
+    require_root()?;
+    let _lock = UpdateLock::acquire(Path::new("/run/lock/factory-update-manager.lock"))?;
+    let request = load_approval_request(&request_path)?;
+    let record = ApprovalStore::new(PathBuf::from("/var/cache/factory-update-manager"), 0)
+        .approve(
+            &request,
+            &approval_inspector(),
+            chrono::Utc::now(),
+            chrono::Duration::minutes(30),
+        )?;
+    print_json(&record)
+}
+
+fn privileged_install_approved(approval_id: &str) -> Result<(), Error> {
+    require_root()?;
+    let _lock = UpdateLock::acquire(Path::new("/run/lock/factory-update-manager.lock"))?;
+    let manager = NativePackageManager::detect()?;
+    let record = ApprovalStore::new(PathBuf::from("/var/cache/factory-update-manager"), 0)
+        .install_approved(
+            approval_id,
+            &approval_inspector(),
+            &manager,
+            chrono::Utc::now(),
+        )?;
+    print_json(&serde_json::json!({
+        "outcome": "Installed",
+        "approvalId": record.approval_id,
+        "version": record.version
+    }))
 }
 
 fn parse_install_outcome(stdout: &str) -> Option<String> {
@@ -525,4 +831,48 @@ fn app_is_running() -> bool {
 fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn status_view(store: &StateStore, state: &StateRecord) -> serde_json::Value {
+    let linux_state = serde_json::to_value(state.state)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "failed".into());
+    let kind = match state.state {
+        State::Idle | State::Installed | State::RolledBack => "idle",
+        State::Checking => "checking",
+        State::Downloading | State::Building | State::Validating | State::Installing => {
+            "downloading"
+        }
+        State::ReadyPendingExit => "available",
+        State::InstallFailedManualAction | State::Failed => "error",
+    };
+    serde_json::json!({
+        "schemaVersion": 1,
+        "kind": kind,
+        "linuxState": linux_state,
+        "message": state.message.as_deref().map(|value| sanitize_text(value, 512)),
+        "manualCommand": state.manual_command.as_deref().map(|value| sanitize_text(value, 4096)),
+        "version": state.version,
+        "packagePath": state.package_path,
+        "packageSha256": state.package_sha256,
+        "approvalId": state.approval_id,
+        "approvalExpiresAt": state.approval_expires_at,
+        "installRequested": state.install_requested,
+        "notificationDedupeKey": state.notification_dedupe_key,
+        "relaunchPending": state.relaunch_pending,
+        "relaunchError": state.relaunch_error.as_deref().map(|value| sanitize_text(value, 512)),
+        "state": state,
+        "stateFile": store.path()
+    })
+}
+
+fn sanitize_text(value: &str, limit: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\t'))
+        .take(limit)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }

@@ -92,8 +92,47 @@ fn status_json_has_a_stable_top_level_schema_version() {
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["kind"], "idle");
+    assert_eq!(value["linuxState"], "idle");
     assert_eq!(value["state"]["state"], "idle");
     assert!(value["stateFile"].as_str().unwrap().ends_with("state.json"));
+}
+
+#[test]
+fn status_json_exposes_manual_command_and_sanitized_fields_separately() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    StateStore::new(paths.state_file())
+        .save(&StateRecord {
+            state: State::InstallFailedManualAction,
+            version: Some("0.139.0".into()),
+            package_path: Some(PathBuf::from("/safe/candidate.deb")),
+            package_sha256: Some("a".repeat(64)),
+            manual_command: Some("sudo factory-update-manager reconcile-install\n".into()),
+            message: Some("Manual action required\u{0000}<b>not html</b>".into()),
+            ..StateRecord::default()
+        })
+        .unwrap();
+
+    let output = command(root.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["kind"], "error");
+    assert_eq!(value["linuxState"], "install-failed-manual-action");
+    assert_eq!(
+        value["manualCommand"],
+        "sudo factory-update-manager reconcile-install"
+    );
+    assert_eq!(value["version"], "0.139.0");
+    assert_eq!(value["packagePath"], "/safe/candidate.deb");
+    assert_eq!(value["packageSha256"], "a".repeat(64));
+    assert!(!value["message"].as_str().unwrap().contains('\0'));
 }
 
 #[test]
@@ -165,4 +204,100 @@ fn polkit_failure_retains_manual_action_candidate_through_cleanup() {
     cleanup(&paths, &state).unwrap();
     assert!(manifest.is_file());
     assert!(package.is_file());
+}
+
+#[test]
+fn prepare_install_marks_one_request_and_rejects_a_duplicate() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    let (manifest, package) = candidate(&paths, "candidate-140", "0.140.0");
+    let store = StateStore::new(paths.state_file());
+    store
+        .save(&StateRecord {
+            state: State::ReadyPendingExit,
+            candidate_id: Some("candidate-140".into()),
+            version: Some("0.140.0".into()),
+            package_path: Some(package),
+            package_sha256: Some("a".repeat(64)),
+            candidate_manifest: Some(manifest),
+            ..StateRecord::default()
+        })
+        .unwrap();
+
+    let first = command(root.path())
+        .args(["prepare-install", "--pid", "4242", "--no-spawn"])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let envelope: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(envelope["installRequested"], true);
+    assert!(store.load().unwrap().install_requested);
+
+    let second = command(root.path())
+        .args(["prepare-install", "--pid", "4242", "--no-spawn"])
+        .status()
+        .unwrap();
+    assert!(!second.success());
+    assert_eq!(store.load().unwrap().state, State::ReadyPendingExit);
+}
+
+#[test]
+fn reconcile_install_requires_the_expected_installed_version() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    let store = StateStore::new(paths.state_file());
+    store
+        .save(&StateRecord {
+            state: State::InstallFailedManualAction,
+            version: Some("0.140.0".into()),
+            manual_command: Some("sudo dpkg -i /safe/candidate.deb".into()),
+            ..StateRecord::default()
+        })
+        .unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let query = bin.join("dpkg-query");
+    fs::write(&query, "#!/bin/sh\nprintf '0.140.0'\n").unwrap();
+    fs::set_permissions(&query, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let status = command(root.path())
+        .env("PATH", &bin)
+        .arg("reconcile-install")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    let state = store.load().unwrap();
+    assert_eq!(state.state, State::Installed);
+    assert_eq!(state.manual_command, None);
+}
+
+#[test]
+fn setup_unattended_requires_explicit_security_acknowledgement() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+
+    let refused = command(root.path())
+        .arg("setup-unattended")
+        .status()
+        .unwrap();
+    assert!(!refused.success());
+
+    let accepted = command(root.path())
+        .args(["setup-unattended", "--acknowledge-authentication-required"])
+        .status()
+        .unwrap();
+    assert!(accepted.success());
+    let config = root
+        .path()
+        .join("config-home/factory-update-manager/config.toml");
+    assert!(factory_update_manager::polkit::read_unattended(&config).unwrap());
+    assert_eq!(
+        fs::metadata(config).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

@@ -171,7 +171,7 @@ fn rollback_requires_installed_version_to_match_known_good() {
 }
 
 #[test]
-fn unattended_is_secure_by_default_and_uses_a_separate_action() {
+fn unattended_is_secure_by_default_and_never_changes_the_authenticated_install_action() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("config.toml");
     assert!(!read_unattended(&config).unwrap());
@@ -190,7 +190,11 @@ fn unattended_is_secure_by_default_and_uses_a_separate_action() {
     );
     assert_eq!(
         Action::for_install(PackageFormat::Deb, true).policy_id(),
-        "org.factory.desktop.update-manager.install-validated-package"
+        "org.factory.desktop.update-manager.install-deb"
+    );
+    assert_eq!(
+        Action::InstallApprovedPackage.policy_id(),
+        "org.factory.desktop.update-manager.install-approved-package"
     );
 }
 

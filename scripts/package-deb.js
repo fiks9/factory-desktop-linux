@@ -110,6 +110,8 @@ function buildDeb(options) {
   fs.chmodSync(path.join(root, "usr", "lib", "factory-desktop", "factory-droid-daemon"), 0o755);
   fs.copyFileSync(daemonService, path.join(root, "usr", "lib", "systemd", "user", "factory-droid-daemon.service"));
   fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "factory-update-manager.service"), path.join(root, "usr", "lib", "systemd", "user", "factory-update-manager.service"));
+  fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "update-bridge.cjs"), path.join(root, "usr", "lib", "factory-desktop", "update-bridge.cjs"));
+  fs.chmodSync(path.join(root, "usr", "lib", "factory-desktop", "update-bridge.cjs"), 0o644);
   fs.copyFileSync(path.resolve(__dirname, "..", "packaging", "linux", "org.factory.desktop.update-manager.policy"), path.join(root, "usr", "share", "polkit-1", "actions", "org.factory.desktop.update-manager.policy"));
   fs.copyFileSync(resolveUpdaterBinary(options), path.join(root, "usr", "bin", "factory-update-manager"));
   fs.chmodSync(path.join(root, "usr", "bin", "factory-update-manager"), 0o755);

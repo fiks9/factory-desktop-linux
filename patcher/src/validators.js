@@ -59,9 +59,28 @@ function validateAutoUpdater(files) {
 function validateNativeUpdater(files) {
   const all = files.map((file) => file.content).join("\n");
   const marker = "/* factory-linux:linux-native-updater-button */";
-  const noThrowFallback = all.includes("fs.existsSync(helper)") && all.includes("catch(e)") && all.includes("return false");
-  const validationPassed = contextHas(all, marker) && all.includes("FACTORY_UPDATE_MANAGER_PATH") && all.includes("update-manager-unavailable") && noThrowFallback;
-  return { validationPassed, evidence: { marker: contextHas(all, marker), override: all.includes("FACTORY_UPDATE_MANAGER_PATH"), unavailable: all.includes("update-manager-unavailable"), noThrowFallback }, errors: validationPassed ? [] : ["Linux native updater bridge was not validated."] };
+  const bridgeLoads = (all.match(/require\("\/usr\/lib\/factory-desktop\/update-bridge\.cjs"\)/g) || []).length;
+  const handlers = Object.fromEntries(["getState", "install", "checkNow"].map((action) => [
+    action,
+    (all.match(new RegExp(`factoryLinuxUpdateBridge\\.dispatch\\("${action}",\\{\\}\\)`, "g")) || []).length,
+  ]));
+  const oldHandlers = ["getState", "install", "checkNow"].some((action) => {
+    const pattern = new RegExp(`ipcMain\\.handle\\((["'])updates:${action}\\1\\s*,(?!\\(\\)=>factoryLinuxUpdateBridge\\.dispatch)`);
+    return pattern.test(all);
+  });
+  const appImageFallback = all.includes('FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"')
+    && all.includes('linuxState:"update-manager-unavailable"');
+  const validationPassed = (all.match(/\/\* factory-linux:linux-native-updater-button \*\//g) || []).length === 1
+    && bridgeLoads === 1
+    && Object.values(handlers).every((count) => count === 1)
+    && !oldHandlers
+    && appImageFallback
+    && !all.includes("FACTORY_UPDATE_MANAGER_PATH");
+  return {
+    validationPassed,
+    evidence: { marker: contextHas(all, marker), bridgeLoads, handlers, oldHandlers, appImageFallback, fixedPath: !all.includes("FACTORY_UPDATE_MANAGER_PATH") },
+    errors: validationPassed ? [] : ["Linux native updater bridge or required IPC handler contract was not validated."],
+  };
 }
 
 function validatePackagedDaemonMode(files) {
