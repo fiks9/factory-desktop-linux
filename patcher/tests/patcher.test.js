@@ -49,6 +49,23 @@ test("raw hardcoded transport bundle patches all required descriptors", async ()
   assert.equal(fs.existsSync(reportPath), true);
 });
 
+test("patching preserves original unpacked ASAR files and companion tree", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-patcher-unpacked-"));
+  const source = path.join(root, "source");
+  fs.mkdirSync(path.join(source, ".vite", "build", "native"), { recursive: true });
+  fs.writeFileSync(path.join(source, ".vite", "build", "index.js"), rawBundle());
+  fs.writeFileSync(path.join(source, ".vite", "build", "native", "keytar.node"), "native-module");
+  const asarPath = path.join(root, "app.asar");
+  await asar.createPackageWithOptions(source, asarPath, { unpack: path.join(source, ".vite", "build", "native", "keytar.node") });
+
+  await patchAsar({ asarPath });
+
+  const unpackedEntries = asar.listPackage(asarPath, { isPack: true }).filter((entry) => entry.startsWith("unpack : "));
+  assert.deepEqual(unpackedEntries, ["unpack : /.vite/build/native/keytar.node"]);
+  assert.equal(fs.readFileSync(path.join(`${asarPath}.unpacked`, ".vite", "build", "native", "keytar.node"), "utf8"), "native-module");
+  assert.doesNotThrow(() => asar.extractAll(asarPath, path.join(root, "reextracted")));
+});
+
 test("Linux window controls patch adds one bounded Electron overlay and packaged icon", async () => {
   const { asarPath } = await fixture(rawBundle());
 

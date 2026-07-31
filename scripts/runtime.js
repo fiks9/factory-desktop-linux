@@ -91,11 +91,11 @@ async function assembleRuntime(options) {
   const zipPath = path.join(cacheDir, `electron-${extracted.electronVersion}-linux-x64.zip`);
   const sourceAsar = patchedAsarPath || extracted.appAsarPath;
   if (!fs.existsSync(sourceAsar)) throw new Error(`ASAR hook input does not exist: ${sourceAsar}`);
-  return assembleRuntimeAsync({ ...options, zipPath, sourceAsar });
+  return assembleRuntimeAsync({ ...options, zipPath, sourceAsar, sourceUnpacked: options.unpackedPath || extracted.appAsarUnpackedPath || `${sourceAsar}.unpacked` });
 }
 
 async function assembleRuntimeAsync(options) {
-  const { extracted, outputDir, zipPath, sourceAsar } = options;
+  const { extracted, outputDir, zipPath, sourceAsar, sourceUnpacked } = options;
   if (!fs.existsSync(zipPath)) await download(electronZipUrl(extracted.electronVersion), zipPath);
   const temporary = `${outputDir}.runtime-${process.pid}`;
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -108,6 +108,11 @@ async function assembleRuntimeAsync(options) {
   fs.renameSync(electronBinary, productBinary);
   fs.mkdirSync(path.join(temporary, "resources"), { recursive: true });
   fs.copyFileSync(sourceAsar, path.join(temporary, "resources", "app.asar"));
+  const companion = sourceUnpacked || extracted.appAsarUnpackedPath || `${sourceAsar}.unpacked`;
+  if (companion && fs.existsSync(companion)) {
+    const unpackedTarget = path.join(temporary, "resources", "app.asar.unpacked");
+    fs.cpSync(companion, unpackedTarget, { recursive: true, dereference: false, force: true });
+  }
   if (!extracted.iconPath) throw new Error("DMG acceptance did not provide the Factory application icon");
   extractPngIconFromIcns(extracted.iconPath, path.join(temporary, "resources", "factory-desktop.png"), 512);
   fs.copyFileSync(path.join(__dirname, "..", "launcher", "start.sh.template"), path.join(temporary, LAUNCHER_NAME));

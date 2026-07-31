@@ -185,7 +185,7 @@ async function patchAsar(options) {
     const finalChanges = workingFiles
       .filter((file) => file.content !== originalContents.get(file.path))
       .map((file) => [file.path, file.content]);
-    await replaceFilesAtomic(asarPath, finalChanges);
+    await replaceFilesAtomic(asarPath, finalChanges, { unpackedPath: options.unpackedPath });
   }
   const finalHash = sha256File(asarPath);
   const report = { schemaVersion: 1, asarPath: path.basename(asarPath), originalHash, finalHash, changed, outcomes };

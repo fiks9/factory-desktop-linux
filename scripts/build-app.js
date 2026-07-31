@@ -30,12 +30,13 @@ async function buildApp(options = {}) {
   let patchReport;
   let patchedAsarPath = options.patchedAsarPath;
   if (!patchedAsarPath) {
-    patchReport = await patchAsar({ asarPath: extracted.appAsarPath, reportPath: patchReportPath });
+    patchReport = await patchAsar({ asarPath: extracted.appAsarPath, unpackedPath: extracted.appAsarUnpackedPath, reportPath: patchReportPath });
     patchedAsarPath = extracted.appAsarPath;
   }
   const runtime = await assembleRuntime({
     extracted,
     patchedAsarPath,
+    unpackedPath: extracted.appAsarUnpackedPath,
     outputDir: path.join(candidate, "app"),
     cacheDir: options.electronCacheDir || path.join(root, ".cache", "electron"),
   });

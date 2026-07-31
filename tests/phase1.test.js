@@ -17,10 +17,11 @@ const {
   cachePinnedDmg,
   validateOfficialDmgUrl,
 } = require("../scripts/dmg");
-const { plistValue, validateDmgFile } = require("../scripts/extract-dmg");
+const { findAppAsarUnpacked, plistValue, validateDmgFile } = require("../scripts/extract-dmg");
 const { execFileSync } = require("node:child_process");
 const { assertNoBundledDroid, assertAcceptedPatchReport } = require("../scripts/package-deb");
 const { PRODUCT_BINARY_NAME, assertPackagedRuntimeLayout } = require("../scripts/runtime");
+const { assembleRuntimeAsync } = require("../scripts/runtime");
 const { extractPngIconFromIcns, readPngDimensions } = require("../scripts/icon");
 const zlib = require("node:zlib");
 
@@ -243,6 +244,16 @@ test("DMG acceptance recognizes a synthetic Factory-shaped archive", () => {
   assert.equal(accepted.infoEntry, "Factory/Factory.app/Contents/Info.plist");
 });
 
+test("DMG acceptance identifies the optional app.asar.unpacked companion", () => {
+  const listing = [
+    "Path = Factory/Factory.app/Contents/Resources/app.asar",
+    "Path = Factory/Factory.app/Contents/Resources/app.asar.unpacked",
+    "Path = Factory/Factory.app/Contents/Resources/app.asar.unpacked/node_modules/keytar/build/Release/keytar.node",
+  ].join("\n");
+  assert.equal(findAppAsarUnpacked(listing), "Factory/Factory.app/Contents/Resources/app.asar.unpacked");
+  assert.equal(findAppAsarUnpacked("Path = Factory/Factory.app/Contents/Resources/app.asar"), null);
+});
+
 test("package validation rejects an accidentally bundled droid", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-phase2-droid-"));
   fs.mkdirSync(path.join(root, "resources", "bin"), { recursive: true });
@@ -275,6 +286,40 @@ test("packaged runtime uses a product-named ELF beside resources/app.asar", () =
   assert.equal(result.binaryName, "factory-desktop");
   assert.equal(result.iconPath, path.join(root, "resources", "factory-desktop.png"));
   assert.equal(fs.existsSync(path.join(root, "electron")), false);
+});
+
+test("runtime assembly carries the ASAR companion tree for unpacked native modules", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-runtime-unpacked-"));
+  try {
+    const source = path.join(root, "source");
+    const sourceAsar = path.join(root, "app.asar");
+    const zipRoot = path.join(root, "electron");
+    fs.mkdirSync(path.join(source, ".vite", "build"), { recursive: true });
+    fs.writeFileSync(path.join(source, ".vite", "build", "index.js"), "module.exports = {};\n");
+    fs.mkdirSync(path.join(source, "native"), { recursive: true });
+    fs.writeFileSync(path.join(source, "native", "keytar.node"), "native-module");
+    const asar = require(require.resolve("@electron/asar", { paths: [path.resolve(__dirname, "..", "patcher")] }));
+    await asar.createPackageWithOptions(source, sourceAsar, { unpack: path.join(source, "native", "keytar.node") });
+    fs.mkdirSync(zipRoot, { recursive: true });
+    const electron = path.join(zipRoot, "electron");
+    fs.writeFileSync(electron, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from("synthetic")]), { mode: 0o755 });
+    const zipPath = path.join(root, "electron.zip");
+    execFileSync("7z", ["a", "-tzip", zipPath, "electron"], { cwd: zipRoot, stdio: "ignore" });
+    const icon = path.join(root, "factory.icns");
+    fs.writeFileSync(icon, icnsWithPng("ic09", solidPng(512, 512)));
+    const outputDir = path.join(root, "app");
+
+    await assembleRuntimeAsync({
+      extracted: { electronVersion: "42.3.3", appAsarPath: sourceAsar, appAsarUnpackedPath: `${sourceAsar}.unpacked`, iconPath: icon },
+      outputDir,
+      zipPath,
+      sourceAsar,
+    });
+
+    assert.equal(fs.readFileSync(path.join(outputDir, "resources", "app.asar.unpacked", "native", "keytar.node"), "utf8"), "native-module");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("packaged runtime rejects a missing Linux application icon", () => {

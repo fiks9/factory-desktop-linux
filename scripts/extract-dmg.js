@@ -26,6 +26,10 @@ function findAppAsar(listing) {
   return findEntry(listing, (entry) => /\.app\/Contents\/Resources\/app\.asar$/.test(entry));
 }
 
+function findAppAsarUnpacked(listing) {
+  return findEntry(listing, (entry) => /\.app\/Contents\/Resources\/app\.asar\.unpacked$/.test(entry));
+}
+
 function findAppInfo(listing) {
   return findEntry(listing, (entry) => /\.app\/Contents\/Info\.plist$/.test(entry));
 }
@@ -66,15 +70,17 @@ function validateDmgFile(dmgPath, expectedSha256) {
   if (expectedSha256 && sha256 !== expectedSha256) throw new Error(`DMG SHA-256 mismatch: expected ${expectedSha256}, got ${sha256}`);
   const listing = listDmg(dmgPath);
   const appAsarEntry = findAppAsar(listing);
+  const appAsarUnpackedEntry = findAppAsarUnpacked(listing);
   const infoEntry = findAppInfo(listing);
   if (!appAsarEntry || !infoEntry) throw new Error("DMG acceptance failed: Factory.app/Contents/app.asar or Info.plist not found");
-  return { sha256, bytes: stat.size, listing, appAsarEntry, infoEntry, frameworkEntry: findFrameworkInfo(listing), iconEntry: findIcon(listing) };
+  return { sha256, bytes: stat.size, listing, appAsarEntry, appAsarUnpackedEntry, infoEntry, frameworkEntry: findFrameworkInfo(listing), iconEntry: findIcon(listing) };
 }
 
 function extractDmg(dmgPath, outputDir, options = {}) {
   fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   const profile = validateDmgFile(dmgPath, options.expectedSha256);
   const appAsarPath = extractEntry(dmgPath, outputDir, profile.appAsarEntry, true);
+  const appAsarUnpackedPath = extractEntry(dmgPath, outputDir, profile.appAsarUnpackedEntry, false);
   const infoPlistPath = extractEntry(dmgPath, outputDir, profile.infoEntry, true);
   const frameworkPlistPath = extractEntry(dmgPath, outputDir, profile.frameworkEntry, false);
   const iconPath = extractEntry(dmgPath, outputDir, profile.iconEntry, false);
@@ -92,6 +98,7 @@ function extractDmg(dmgPath, outputDir, options = {}) {
     version,
     electronVersion,
     appAsarPath,
+    appAsarUnpackedPath,
     infoPlistPath,
     frameworkPlistPath,
     iconPath,
@@ -113,4 +120,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { listDmg, findAppAsar, validateDmgFile, extractDmg, plistValue };
+module.exports = { listDmg, findAppAsar, findAppAsarUnpacked, validateDmgFile, extractDmg, plistValue };
