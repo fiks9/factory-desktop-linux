@@ -17,6 +17,7 @@ target/
 /patcher/node_modules/
 /tests/bundle-regression/cache/
 /tests/bundle-regression/fixtures/
+/docs/superpowers/
 
 /.factory-app/
 /.factory-candidate-*/
