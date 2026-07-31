@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
+const { EventEmitter } = require("node:events");
 const { test } = require("node:test");
 const asar = require("@electron/asar");
 const { sha256File } = require("../src/asar-io");
@@ -25,7 +26,14 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:win32?\"default\":\"hidden\",trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:win32?\"default\":\"hidden\",trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});const factoryContents=factoryWindow.webContents;W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+}
+
+function legacyStaticWindowBundle() {
+  return rawBundle().replace(
+    'titleBarStyle:win32?"default":"hidden",trafficLightPosition:win32?void 0:{x:12,y:10},',
+    'titleBarStyle:win32?"default":"hidden",/* factory-linux:linux-window-controls */titleBarOverlay:process.platform==="linux"?{color:"#171717",symbolColor:"#f5f5f5",height:30}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:win32?void 0:{x:12,y:10},',
+  );
 }
 
 function commaExpressionBundle() {
@@ -66,7 +74,7 @@ test("patching preserves original unpacked ASAR files and companion tree", async
   assert.doesNotThrow(() => asar.extractAll(asarPath, path.join(root, "reextracted")));
 });
 
-test("Linux window controls patch adds one bounded Electron overlay and packaged icon", async () => {
+test("Linux window controls patch follows Factory nativeTheme and cleans up its listener", async () => {
   const { asarPath } = await fixture(rawBundle());
 
   const report = await patchAsar({ asarPath });
@@ -77,13 +85,58 @@ test("Linux window controls patch adds one bounded Electron overlay and packaged
   assert.equal(outcome.validationPassed, true);
   assert.equal((patched.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length, 1);
   assert.equal((patched.match(/titleBarOverlay:process\.platform===\"linux\"/g) || []).length, 1);
+  assert.equal((patched.match(/\/\* factory-linux:linux-window-controls-theme-sync \*\//g) || []).length, 1);
+  assert.equal((patched.match(/\/\* factory-linux:linux-window-controls-theme-sync-end \*\//g) || []).length, 1);
+  assert.match(patched, /color:W\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0"/);
+  assert.match(patched, /symbolColor:W\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000"/);
+  assert.match(patched, /factoryWindow\.setTitleBarOverlay\(/);
+  assert.match(patched, /W\.nativeTheme\.on\("updated",factoryLinuxApplyWindowControlsTheme\)/);
+  assert.match(patched, /W\.nativeTheme\.removeListener\("updated",factoryLinuxApplyWindowControlsTheme\)/);
+  assert.doesNotMatch(patched, /color:"#171717",symbolColor:"#f5f5f5"/);
   assert.equal((patched.match(/icon:process\.platform===\"linux\"\?process\.resourcesPath\+\"\/factory-desktop\.png\"/g) || []).length, 1);
   assert.doesNotMatch(patched, /titleBarStyle:win32\?"default":"hidden",trafficLightPosition/);
+
+  const runtimeStart = patched.indexOf("/* factory-linux:linux-window-controls-theme-sync */");
+  const runtimeEnd = patched.indexOf("/* factory-linux:linux-window-controls-theme-sync-end */", runtimeStart);
+  assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart);
+  const runtime = patched.slice(runtimeStart, runtimeEnd);
+  const nativeTheme = new EventEmitter();
+  nativeTheme.shouldUseDarkColors = false;
+  const overlays = [];
+  let closed;
+  const factoryWindow = {
+    isDestroyed: () => false,
+    setTitleBarOverlay: (overlay) => overlays.push(overlay),
+    once: (event, listener) => { if (event === "closed") closed = listener; },
+  };
+  new Function("W", "factoryWindow", runtime)({ nativeTheme }, factoryWindow);
+  assert.deepEqual(overlays.at(-1), { color: "#f2f0f0", symbolColor: "#000000", height: 26 });
+  nativeTheme.shouldUseDarkColors = true;
+  nativeTheme.emit("updated");
+  assert.deepEqual(overlays.at(-1), { color: "#161413", symbolColor: "#f2f0f0", height: 26 });
+  closed();
+  const countAfterClose = overlays.length;
+  nativeTheme.emit("updated");
+  assert.equal(overlays.length, countAfterClose);
 
   const second = await patchAsar({ asarPath });
   const secondOutcome = second.outcomes.find((item) => item.id === "linux-window-controls");
   assert.equal(secondOutcome.alreadyPatched, true);
   assert.equal(secondOutcome.validationPassed, true);
+});
+
+test("Linux window controls patch migrates the legacy static overlay", async () => {
+  const { asarPath } = await fixture(legacyStaticWindowBundle());
+
+  const report = await patchAsar({ asarPath });
+  const outcome = report.outcomes.find((item) => item.id === "linux-window-controls");
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+
+  assert.equal(outcome.matched, true);
+  assert.equal(outcome.patched, true);
+  assert.equal(outcome.validationPassed, true);
+  assert.match(patched, /factory-linux:linux-window-controls-theme-sync/);
+  assert.doesNotMatch(patched, /color:"#171717",symbolColor:"#f5f5f5"/);
 });
 
 test("Linux window controls patch fails closed when the BrowserWindow contract drifts", async () => {

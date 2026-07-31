@@ -40,6 +40,20 @@ test("bridge parses every schema-1 Rust state into a compatibility kind", () => 
   }
 });
 
+test("available update exposes the current and latest versions expected by Factory renderer", async () => {
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => envelope("ready-pending-exit", { version: "0.143.0" }),
+    app: { getVersion: () => "0.142.0" },
+  });
+
+  const state = await bridge.getState();
+
+  assert.equal(state.kind, "available");
+  assert.equal(state.currentVersion, "0.142.0");
+  assert.equal(state.latestVersion, "0.143.0");
+});
+
 test("bridge rejects invalid JSON, schema, state, and untrusted text", () => {
   assert.throws(() => parseStatus("not json"), /invalid JSON/);
   assert.throws(() => parseStatus(JSON.stringify({ schemaVersion: 2 })), /schema/);
@@ -136,7 +150,7 @@ test("ready install requires a parented confirmation then prepares and quits", a
       return { response: 0 };
     } },
     windows: { getFocusedWindow: () => parent, getAllWindows: () => [parent] },
-    app: { quit: () => calls.push(["app.quit"]) },
+    app: { getVersion: () => "0.139.0", quit: () => calls.push(["app.quit"]) },
     pid: 4242,
   });
 

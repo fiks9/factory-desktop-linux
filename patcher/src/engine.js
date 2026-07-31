@@ -13,7 +13,7 @@ const DESCRIPTORS = [
   { id: "prevent-listen-ipc", description: "Prevent --listen ipc on Linux", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "daemon spawn args structural matcher", migrationMarkers: ["factory-linux:prevent-listen-ipc"], apply: patches.preventListen, validate: validators.validateListenIpc },
   { id: "system-daemon-adoption", description: "Adopt the user-owned system Droid daemon", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "daemon start path anchor", migrationMarkers: ["factory-linux:system-daemon-adoption"], apply: patches.adoption, validate: validators.validateAdoption },
   { id: "system-droid-cli-resolver", description: "Resolve the current system droid executable", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "packaged process.resourcesPath resolver", migrationMarkers: ["factory-linux:system-droid-cli-resolver"], apply: patches.systemDroid, validate: validators.validateSystemDroid },
-  { id: "linux-window-controls", description: "Provide Electron window controls and a packaged icon on Linux", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "BrowserWindow titleBarStyle plus trafficLightPosition structural matcher", migrationMarkers: ["factory-linux:linux-window-controls"], apply: patches.windowControls, validate: validators.validateWindowControls },
+  { id: "linux-window-controls", description: "Provide theme-aware Electron window controls and a packaged icon on Linux", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "BrowserWindow titleBarStyle, webContents, and nativeTheme structural matcher", migrationMarkers: ["factory-linux:linux-window-controls", "factory-linux:linux-window-controls-theme-sync"], apply: patches.windowControls, validate: validators.validateWindowControls },
   { id: "linux-native-updater-button", description: "Bridge Linux update actions to factory-update-manager", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "autoUpdater update action callsite", migrationMarkers: ["factory-linux:linux-native-updater-button"], apply: patches.nativeUpdater, validate: validators.validateNativeUpdater },
   { id: "auto-updater-guard", description: "Guard Electron autoUpdater on Linux", phase: "main-bundle", ciPolicy: CRITICAL_POLICY, matchStrategy: "autoUpdater callsite guard", migrationMarkers: ["factory-linux:auto-updater-guard"], apply: patches.autoUpdater, validate: validators.validateAutoUpdater },
 ];
@@ -81,7 +81,7 @@ const DIAGNOSTIC_ANCHORS = {
   "prevent-listen-ipc": ["--listen", "ipc"],
   "system-daemon-adoption": ["--enable-child-ipc", "startInternal"],
   "system-droid-cli-resolver": ["process.resourcesPath", "droid"],
-  "linux-window-controls": ["titleBarStyle", "trafficLightPosition", "titleBarOverlay"],
+  "linux-window-controls": ["titleBarStyle", "trafficLightPosition", "titleBarOverlay", "nativeTheme"],
   "linux-native-updater-button": ["updates:getState", "updates:install", "updates:checkNow"],
   "auto-updater-guard": ["autoUpdater.checkForUpdates", "autoUpdater.quitAndInstall"],
   "packaged-daemon-mode": ["app.isPackaged", "--debug"],

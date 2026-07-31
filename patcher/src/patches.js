@@ -10,50 +10,153 @@ function mainFile(files, predicate) {
   return files.find((file) => predicate(file.content));
 }
 
+function escapedRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function windowContext(content, propertyIndex) {
+  const start = Math.max(0, propertyIndex - 1600);
+  const prefix = content.slice(start, propertyIndex);
+  const constructors = [...prefix.matchAll(/([A-Za-z_$][\w$]*)=new ([A-Za-z_$][\w$]*)\.BrowserWindow\(\{/g)];
+  if (constructors.length === 0) return null;
+  const constructor = constructors.at(-1);
+  const constructorEnd = start + constructor.index + constructor[0].length;
+  if (content.slice(constructorEnd, propertyIndex).includes("});")) return null;
+  const windowAlias = constructor[1];
+  const electronAlias = constructor[2];
+  const windowPattern = escapedRegex(windowAlias);
+  const anchorRegionEnd = Math.min(content.length, propertyIndex + 3000);
+  const anchorRegion = content.slice(propertyIndex, anchorRegionEnd);
+  const anchors = [...anchorRegion.matchAll(new RegExp(`const ([A-Za-z_$][\\w$]*)=${windowPattern}\\.webContents;`, "g"))];
+  if (anchors.length !== 1) return null;
+  return {
+    windowAlias,
+    electronAlias,
+    webContentsAlias: anchors[0][1],
+    anchor: anchors[0][0],
+    anchorIndex: propertyIndex + anchors[0].index,
+  };
+}
+
 function windowControls(files) {
   const id = "linux-window-controls";
   const marker = MARKER(id);
-  const currentPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
+  const syncMarker = MARKER("linux-window-controls-theme-sync");
+  const syncEndMarker = MARKER("linux-window-controls-theme-sync-end");
+  const upstreamPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
+  const legacyPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",\/\* factory-linux:linux-window-controls \*\/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0,icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0,trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
   const currentMatches = [];
+  const legacyMatches = [];
   let markerCount = 0;
+  let syncMarkerCount = 0;
+  let syncEndMarkerCount = 0;
   let overlayCount = 0;
+  let legacyOverlayCount = 0;
   let iconCount = 0;
+  let listenerCount = 0;
+  let cleanupCount = 0;
   for (const file of files) {
     markerCount += (file.content.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length;
-    overlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
+    syncMarkerCount += (file.content.match(/\/\* factory-linux:linux-window-controls-theme-sync \*\//g) || []).length;
+    syncEndMarkerCount += (file.content.match(/\/\* factory-linux:linux-window-controls-theme-sync-end \*\//g) || []).length;
+    overlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0",symbolColor:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000",height:26\}:void 0/g) || []).length;
+    legacyOverlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
     iconCount += (file.content.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
-    for (const match of file.content.matchAll(currentPattern)) {
+    listenerCount += (file.content.match(/\.nativeTheme\.on\("updated",factoryLinuxApplyWindowControlsTheme\)/g) || []).length;
+    cleanupCount += (file.content.match(/\.nativeTheme\.removeListener\("updated",factoryLinuxApplyWindowControlsTheme\)/g) || []).length;
+    for (const match of file.content.matchAll(upstreamPattern)) {
       currentMatches.push({ file, text: match[0], alias: match[1] });
+    }
+    for (const match of file.content.matchAll(legacyPattern)) {
+      legacyMatches.push({ file, text: match[0], alias: match[1], index: match.index });
     }
   }
   const alreadyPatched = markerCount === 1
+    && syncMarkerCount === 1
+    && syncEndMarkerCount === 1
     && overlayCount === 1
+    && legacyOverlayCount === 0
     && iconCount === 1
-    && currentMatches.length === 0;
+    && listenerCount === 1
+    && cleanupCount === 1
+    && currentMatches.length === 0
+    && legacyMatches.length === 0;
   if (alreadyPatched) {
     const file = files.find((candidate) => candidate.content.includes(marker));
     return result(id, true, false, true, [], {
       file: file?.path,
       markerCount,
+      syncMarkerCount,
+      syncEndMarkerCount,
       overlayCount,
+      legacyOverlayCount,
       iconCount,
+      listenerCount,
+      cleanupCount,
       matcher: "browser-window-titlebar-traffic-light-contract",
     });
   }
-  if (markerCount !== 0 || overlayCount !== 0 || iconCount !== 0 || currentMatches.length !== 1) {
+  const upstreamCandidate = markerCount === 0
+    && syncMarkerCount === 0
+    && syncEndMarkerCount === 0
+    && overlayCount === 0
+    && legacyOverlayCount === 0
+    && iconCount === 0
+    && listenerCount === 0
+    && cleanupCount === 0
+    && currentMatches.length === 1
+    && legacyMatches.length === 0;
+  const legacyCandidate = markerCount === 1
+    && syncMarkerCount === 0
+    && syncEndMarkerCount === 0
+    && overlayCount === 0
+    && legacyOverlayCount === 1
+    && iconCount === 1
+    && listenerCount === 0
+    && cleanupCount === 0
+    && currentMatches.length === 0
+    && legacyMatches.length === 1;
+  if (!upstreamCandidate && !legacyCandidate) {
     return result(id, false, false, false, [], {
       markerCount,
+      syncMarkerCount,
+      syncEndMarkerCount,
       overlayCount,
+      legacyOverlayCount,
       iconCount,
+      listenerCount,
+      cleanupCount,
       matchCount: currentMatches.length,
+      legacyMatchCount: legacyMatches.length,
       matcher: "browser-window-titlebar-traffic-light-contract",
     });
   }
-  const [{ file, text, alias }] = currentMatches;
-  const replacement = `titleBarStyle:${alias}?"default":"hidden",${marker}titleBarOverlay:process.platform==="linux"?{color:"#171717",symbolColor:"#f5f5f5",height:30}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:${alias}?void 0:{x:12,y:10},`;
-  return result(id, true, true, false, [[file.path, file.content.replace(text, replacement)]], {
+  const match = upstreamCandidate ? currentMatches[0] : legacyMatches[0];
+  const { file, text, alias } = match;
+  const propertyIndex = file.content.indexOf(text);
+  const context = windowContext(file.content, propertyIndex);
+  if (!context) {
+    return result(id, false, false, false, [], {
+      file: file.path,
+      matchCount: 1,
+      contextMatched: false,
+      matcher: "browser-window-titlebar-traffic-light-contract",
+    });
+  }
+  const { windowAlias, electronAlias, anchor, anchorIndex } = context;
+  const replacement = `titleBarStyle:${alias}?"default":"hidden",${marker}titleBarOverlay:process.platform==="linux"?{color:${electronAlias}.nativeTheme.shouldUseDarkColors?"#161413":"#f2f0f0",symbolColor:${electronAlias}.nativeTheme.shouldUseDarkColors?"#f2f0f0":"#000000",height:26}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:${alias}?void 0:{x:12,y:10},`;
+  let content = file.content.slice(0, propertyIndex) + replacement + file.content.slice(propertyIndex + text.length);
+  const anchorShift = replacement.length - text.length;
+  const insertAt = anchorIndex + anchorShift + anchor.length;
+  const runtime = `${syncMarker}const factoryLinuxApplyWindowControlsTheme=()=>{if(${windowAlias}.isDestroyed())return;const factoryLinuxDarkTheme=${electronAlias}.nativeTheme.shouldUseDarkColors;${windowAlias}.setTitleBarOverlay({color:factoryLinuxDarkTheme?"#161413":"#f2f0f0",symbolColor:factoryLinuxDarkTheme?"#f2f0f0":"#000000",height:26})};if(process.platform==="linux"){factoryLinuxApplyWindowControlsTheme();${electronAlias}.nativeTheme.on("updated",factoryLinuxApplyWindowControlsTheme);${windowAlias}.once("closed",()=>${electronAlias}.nativeTheme.removeListener("updated",factoryLinuxApplyWindowControlsTheme))};${syncEndMarker}`;
+  content = content.slice(0, insertAt) + runtime + content.slice(insertAt);
+  return result(id, true, true, false, [[file.path, content]], {
     file: file.path,
     matchCount: 1,
+    migratedLegacyOverlay: legacyCandidate,
+    windowAlias,
+    electronAlias,
+    webContentsAlias: context.webContentsAlias,
     matcher: "browser-window-titlebar-traffic-light-contract",
   });
 }

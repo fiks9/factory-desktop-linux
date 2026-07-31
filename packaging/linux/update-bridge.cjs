@@ -33,6 +33,13 @@ const COMPATIBILITY_KINDS = Object.freeze({
   failed: "error",
 });
 
+function strictFactoryVersion(value, name) {
+  if (typeof value !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value)) {
+    throw new Error(`invalid ${name}`);
+  }
+  return value;
+}
+
 function sanitizeText(value) {
   if (typeof value !== "string") return undefined;
   return value
@@ -70,7 +77,9 @@ function parseStatus(output) {
     schemaVersion: 1,
     kind: expectedKind,
     linuxState: value.linuxState,
-    version: optionalString(value.version, "version", 128),
+    version: value.version === undefined || value.version === null
+      ? undefined
+      : strictFactoryVersion(value.version, "version"),
     packagePath: optionalString(value.packagePath, "package path", 4096),
     packageSha256: optionalString(value.packageSha256, "package hash", 64),
     manualCommand: optionalString(value.manualCommand, "manual command", 4096),
@@ -152,7 +161,18 @@ function createBridge(overrides = {}) {
   async function runStatus(args) {
     if (!helperExists()) return unavailableState();
     try {
-      return parseStatus(await run(args));
+      const state = parseStatus(await run(args));
+      if (state.kind === "available") {
+        return Object.freeze({
+          ...state,
+          currentVersion: strictFactoryVersion(app?.getVersion?.(), "current Factory version"),
+          latestVersion: strictFactoryVersion(state.version, "latest Factory version"),
+        });
+      }
+      if (state.kind === "downloading" && state.version) {
+        return Object.freeze({ ...state, targetVersion: state.version });
+      }
+      return state;
     } catch (error) {
       return failedState(error?.message);
     }

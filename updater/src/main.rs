@@ -82,6 +82,7 @@ enum Commands {
         pid: u32,
     },
     ReconcileInstall,
+    DiscardCandidate,
     SetupUnattended {
         #[arg(long)]
         acknowledge_authentication_required: bool,
@@ -160,6 +161,7 @@ fn run(cli: Cli) -> Result<(), Error> {
         Commands::PrepareInstall { pid, no_spawn } => prepare_install(pid, no_spawn),
         Commands::AfterExit { pid } => after_exit(&context, pid),
         Commands::ReconcileInstall => reconcile_install(),
+        Commands::DiscardCandidate => discard_candidate(),
         Commands::SetupUnattended {
             acknowledge_authentication_required,
         } => setup_unattended(acknowledge_authentication_required),
@@ -402,7 +404,7 @@ fn check_now(
                 }
             };
             if pinned_dmg.is_none()
-                && manager.installed_version()?.as_deref() == Some(version.as_str())
+                && manager.installed_factory_version()?.as_deref() == Some(version.as_str())
             {
                 transition(
                     store,
@@ -519,6 +521,28 @@ fn check_now(
             )?;
         }
         result
+    })
+}
+
+fn discard_candidate() -> Result<(), Error> {
+    with_locked_user_state(|paths, store, mut state| {
+        if state.state == State::Installing || state.install_requested {
+            return Err("cannot discard a candidate while installation is active".into());
+        }
+        state.candidate_id = None;
+        state.version = None;
+        state.package_path = None;
+        state.package_sha256 = None;
+        state.candidate_manifest = None;
+        state.manual_command = None;
+        state.notification_dedupe_key = None;
+        state.approval_id = None;
+        state.approval_expires_at = None;
+        state.relaunch_pending = false;
+        state.relaunch_error = None;
+        transition(store, &mut state, State::Idle, "update candidate discarded")?;
+        cleanup(paths, &state)?;
+        print_json(&status_view(store, &state))
     })
 }
 

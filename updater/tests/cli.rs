@@ -210,6 +210,73 @@ fn polkit_failure_retains_manual_action_candidate_through_cleanup() {
 }
 
 #[test]
+fn explicit_discard_removes_a_ready_candidate_and_returns_to_idle() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    let (manifest, package) = candidate(&paths, "candidate-142", "0.142.0");
+    let store = StateStore::new(paths.state_file());
+    store
+        .save(&StateRecord {
+            state: State::ReadyPendingExit,
+            candidate_id: Some("candidate-142".into()),
+            version: Some("0.142.0".into()),
+            package_path: Some(package.clone()),
+            package_sha256: Some(sha256_file(&package).unwrap()),
+            candidate_manifest: Some(manifest.clone()),
+            ..StateRecord::default()
+        })
+        .unwrap();
+
+    let output = command(root.path())
+        .arg("discard-candidate")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = store.load().unwrap();
+    assert_eq!(state.state, State::Idle);
+    assert_eq!(state.candidate_id, None);
+    assert_eq!(state.version, None);
+    assert!(!manifest.exists());
+    assert!(!package.exists());
+}
+
+#[test]
+fn deb_wrapper_revision_does_not_trigger_a_same_factory_version_build() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let query = bin.join("dpkg-query");
+    fs::write(&query, "#!/bin/sh\nprintf '0.142.0-5'\n").unwrap();
+    fs::set_permissions(&query, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = command(root.path())
+        .env("PATH", &bin)
+        .args(["check-now", "--version", "0.142.0", "--format", "deb"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = StateStore::new(paths.state_file()).load().unwrap();
+    assert_eq!(state.state, State::Idle);
+    assert_eq!(state.version, None);
+    assert!(paths.workspaces_dir().read_dir().unwrap().next().is_none());
+}
+
+#[test]
 fn prepare_install_marks_one_request_and_rejects_a_duplicate() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("home")).unwrap();

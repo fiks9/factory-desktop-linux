@@ -41,6 +41,44 @@ impl NativePackageManager {
             PackageFormat::Rpm => Self::Rpm,
         }
     }
+
+    pub fn installed_factory_version(&self) -> Result<Option<String>, Error> {
+        self.installed_version()?
+            .map(|version| factory_version_from_package_version(self.format(), &version))
+            .transpose()
+    }
+}
+
+pub fn factory_version_from_package_version(
+    format: PackageFormat,
+    package_version: &str,
+) -> Result<String, Error> {
+    let factory_version = match format {
+        PackageFormat::Deb => {
+            if let Some((version, revision)) = package_version.rsplit_once('-') {
+                if revision.bytes().all(|byte| byte.is_ascii_digit()) {
+                    if revision.starts_with('0') {
+                        return Err("Debian wrapper revision must be a positive integer".into());
+                    }
+                    version
+                } else {
+                    package_version
+                }
+            } else {
+                package_version
+            }
+        }
+        PackageFormat::Rpm => {
+            if !package_version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+            {
+                return Err("RPM Factory version must contain only numeric components".into());
+            }
+            package_version
+        }
+    };
+    crate::upstream::parse_version(factory_version)
 }
 
 impl PackageManager for NativePackageManager {
