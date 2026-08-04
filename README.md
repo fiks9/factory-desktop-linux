@@ -77,8 +77,8 @@ polkit policy, or `systemd` user services.
   artifacts.
 - A Rust update manager for native packages with after-exit installation,
   package-manager verification, known-good retention, and rollback support.
-- Package-bound provenance, checksums, bounded diagnostics, and a manual release
-  acceptance workflow.
+- Package-bound provenance, checksums, bounded diagnostics, and an automatic
+  release acceptance workflow.
 
 ## Architecture
 
@@ -209,17 +209,21 @@ make test-real-bundles
 make release-check
 ```
 
-GitHub Releases are created only through the manually dispatched
+GitHub Releases are created through the
 [Release workflow](https://github.com/fiks9/factory-desktop-linux/actions/workflows/release.yml).
-Maintainers provide an exact Factory version, an explicit `linux.N` wrapper
-revision, and a reviewed source ref from the protected branch history. The
-workflow builds and accepts the complete bundle before its separate publication
-job can create a release.
+The scheduled upstream watcher can dispatch this workflow automatically after
+an accepted exact-version probe. Maintainers can still run it manually with an
+exact Factory version, an explicit `linux.N` wrapper revision, and a reviewed
+source ref from the protected branch history. In both modes, the workflow
+builds and accepts the complete bundle before its separate publication job can
+create a release.
 
-The scheduled upstream watcher reports drift but does not change
-`release/accepted-upstream.json`, create a release, or treat tags and drafts as
-accepted upstream evidence. Default releases are checksum-only unless detached
-`.asc` signatures are actually present.
+The scheduled upstream watcher reports drift and only dispatches an automatic
+release after its exact-version DMG and patch probe is accepted. A published
+release is still gated by the full release workflow; failed builds do not create
+release assets. After successful publication, the workflow records the accepted
+upstream version in `release/accepted-upstream.json`. Default releases are
+checksum-only unless detached `.asc` signatures are actually present.
 
 See the [Maintainer runbook](docs/maintainer-runbook.md) and
 [Release process](docs/release-process.md) before publishing.
@@ -255,7 +259,7 @@ More diagnostics and recovery steps are in
 
 The implemented roadmap covers deterministic acquisition, fail-closed patching,
 all three package formats, the Rust updater lifecycle, in-app update integration,
-and manual release acceptance. Remaining security-sensitive work, including any
+and automatic release acceptance. Remaining security-sensitive work, including any
 future passwordless update policy, requires a separate privileged live
 end-to-end review. See [Roadmap](docs/roadmap.md).
 

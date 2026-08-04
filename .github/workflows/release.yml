@@ -196,3 +196,22 @@ jobs:
             --target "$FACTORY_SOURCE_COMMIT" \
             --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION ($FACTORY_WRAPPER_REVISION)" \
             --notes-file "$notes"
+      - name: Record accepted upstream version
+        if: ${{ inputs.source_ref == 'main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          file_json=$(gh api "repos/${GITHUB_REPOSITORY}/contents/release/accepted-upstream.json?ref=main")
+          printf '%s' "$file_json" | node -e 'let body=""; process.stdin.on("data", chunk => body += chunk); process.stdin.on("end", () => process.stdout.write(Buffer.from(JSON.parse(body).content, "base64")));' > release/accepted-upstream.json
+          result=$(node scripts/record-accepted-version.js release/accepted-upstream.json "$FACTORY_RELEASE_VERSION" "$FACTORY_SOURCE_COMMIT")
+          printf '%s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          changed=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).changed ? "true" : "false")' "$result")
+          if [[ "$changed" != "true" ]]; then exit 0; fi
+          content=$(base64 --wrap=0 release/accepted-upstream.json)
+          file_sha=$(printf '%s' "$file_json" | node -e 'let body=""; process.stdin.on("data", chunk => body += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(body).sha));')
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/release/accepted-upstream.json" \
+            -f message="chore(release): record accepted Factory ${FACTORY_RELEASE_VERSION}" \
+            -f branch=main \
+            -f sha="$file_sha" \
+            -f content="$content"

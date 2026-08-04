@@ -101,10 +101,10 @@ async function probeVersion(options) {
       error.details = { factoryVersion: version, dmgSha256: dmg.sha256, dmgCacheSource: dmg.source };
       throw error;
     }
-    writeVersionIndex(cacheDir, version, dmg.sha256);
     const reportPath = path.join(root, "patch-report.json");
     try {
       const report = await patchAsar({ asarPath: extracted.appAsarPath, reportPath });
+      writeVersionIndex(cacheDir, version, dmg.sha256);
       return {
         status: "accepted",
         factoryVersion: version,

@@ -85,6 +85,51 @@ test("upstream comparison accepts strict versions and only reports newer release
   assert.throws(() => classifyVersion("latest", "0.139.0"), /Invalid Factory version/);
 });
 
+test("automatic release planning dispatches only accepted new versions", () => {
+  const { planAutomaticRelease, nextWrapperRevision } = require("../scripts/auto-release");
+  const tags = ["v0.139.0-linux.4", "v0.142.0-linux.6", "not-a-release-tag"];
+  assert.equal(nextWrapperRevision(tags), "linux.7");
+  assert.deepEqual(planAutomaticRelease({ version: "0.144.0", probeStatus: "accepted", tags }), {
+    action: "dispatch",
+    reason: "accepted-probe-ready",
+    factoryVersion: "0.144.0",
+    wrapperRevision: "linux.7",
+    sourceRef: "main",
+  });
+  assert.deepEqual(planAutomaticRelease({ version: "0.144.0", probeStatus: "patch-drift", tags }).action, "blocked");
+  assert.deepEqual(planAutomaticRelease({ version: "0.142.0", probeStatus: "accepted", tags }), {
+    action: "already-published",
+    reason: "release-tag-already-exists",
+    factoryVersion: "0.142.0",
+    wrapperRevision: null,
+    existingTags: ["v0.142.0-linux.6"],
+  });
+});
+
+test("accepted upstream recording is monotonic and atomic", () => {
+  const { updateAcceptedVersion } = require("../scripts/record-accepted-version");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-accepted-version-"));
+  const file = path.join(root, "accepted-upstream.json");
+  const commit = "a".repeat(40);
+  fs.writeFileSync(file, `${JSON.stringify({ schemaVersion: 1, acceptedVersion: "0.142.0", acceptedCommit: "b".repeat(40) })}\n`);
+  try {
+    assert.deepEqual(updateAcceptedVersion(file, "0.144.0", commit), {
+      changed: true,
+      acceptedVersion: "0.144.0",
+      acceptedCommit: commit,
+    });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), {
+      schemaVersion: 1,
+      acceptedVersion: "0.144.0",
+      acceptedCommit: commit,
+    });
+    assert.equal(updateAcceptedVersion(file, "0.140.0", "c".repeat(40)).changed, false);
+    assert.equal(updateAcceptedVersion(file, "0.144.0", commit).reason, "already-recorded");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("upstream watch reuses an indexed content-addressed DMG without download", async () => {
   const { sha256File } = require("../scripts/dmg");
   const { acquireCachedOfficialDmg, reuseIndexedDmg } = require("../scripts/upstream-watch");
@@ -513,10 +558,15 @@ test("workflow permissions and publication ordering are fail-closed", () => {
   assert.doesNotMatch(release, /pull_request_target/);
   assert.match(watch, /actions\/cache\/restore@v4/);
   assert.match(watch, /actions\/cache\/save@v4/);
+  assert.match(watch, /auto-release:[\s\S]*needs: watch/);
+  assert.match(watch, /auto-release:[\s\S]*actions:\s*write/);
+  assert.match(watch, /gh workflow run release\.yml/);
   assert.match(watch, /Save newly downloaded content-addressed DMG[\s\S]*if:\s*always\(\) &&/);
   assert.doesNotMatch(watch, /releases\/latest/);
-  assert.doesNotMatch(watch, /tag_name/);
+  assert.match(watch, /releases\?per_page=100/);
   assert.match(watch, /accepted-upstream\.json/);
+  assert.match(release, /Record accepted upstream version/);
+  assert.match(release, /record-accepted-version\.js/);
 });
 
 test("release-check confines all smoke and real harness temporary files to one root", () => {

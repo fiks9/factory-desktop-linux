@@ -6,13 +6,22 @@ The upstream version must be exact, the source ref reviewed and clean, local
 `make release-check` green, and every required patch accepted. Confirm no DMG,
 ASAR, extracted app, package, or proprietary diagnostic is tracked.
 
-## Manual Workflow
+## Automatic And Manual Workflow
 
-Run `.github/workflows/release.yml` from the protected default branch with
-`factory_version`, `wrapper_revision`, and `source_ref`. The ref must resolve to a commit in that triggering
-branch's history. The read-only build job downloads the official DMG, checks version/hash/structure, patches the
-raw ASAR, validates required outcomes, builds all formats, extracts and inspects
-them, then verifies provenance and checksums.
+The scheduled upstream watcher discovers the official latest version and probes
+the exact DMG. When the probe is accepted, it resolves the next unused
+`linux.N` revision and dispatches `.github/workflows/release.yml` automatically.
+If a matching release tag already exists, dispatch is skipped. A failed probe,
+tag conflict, dispatch error, or release gate remains visible in the workflow
+and issue diagnostics.
+
+Maintainers can also run `.github/workflows/release.yml` manually from the
+protected default branch with `factory_version`, `wrapper_revision`, and
+`source_ref`. The ref must resolve to a commit in that triggering branch's
+history. In both modes, the read-only build job downloads the official DMG,
+checks version/hash/structure, patches the raw ASAR, validates required
+outcomes, builds all formats, extracts and inspects them, then verifies
+provenance and checksums.
 
 Factory and wrapper identities are deliberately separate. For the corrected
 Factory `0.139.0` wrapper, use `factory_version=0.139.0` and
@@ -45,6 +54,9 @@ without persisted credentials, not the caller-selected source commit. It then
 revalidates exact assets, requested version, resolved source commit, package
 hashes/sizes, patch-report binding, acceptance summary, and checksums before it
 creates the GitHub Release. It never receives the source DMG or raw/patched ASAR.
+After a successful publication from `main`, the same job atomically records the
+accepted Factory version and source commit in `release/accepted-upstream.json`.
+The update is monotonic and never permits a version regression.
 
 ## Provenance And Checksums
 

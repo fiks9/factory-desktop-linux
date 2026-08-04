@@ -28,7 +28,9 @@ function summarize(result, runUrl) {
         `Factory ${version} is newer than accepted ${result.acceptedVersion}.`,
         probe ? `Patch probe: ${probe.status}; DMG SHA-256: ${probe.dmgSha256}; raw ASAR SHA-256: ${probe.rawAsarSha256}.` : "Patch probe was not requested.",
         `Workflow: ${runUrl}`,
-        "No release was published automatically. Run the manual release workflow after review.",
+        probe?.status === "accepted"
+          ? "The automatic release workflow will be dispatched after this watch run; publication remains gated by the full release acceptance job."
+          : "Automatic release dispatch is blocked until the probe is accepted.",
       ].join("\n\n"),
       summary: `## New Factory version\n\n- Version: ${version}\n- Probe: ${probe?.status || "not run"}\n- Workflow: ${runUrl}\n`,
     };
@@ -66,7 +68,11 @@ function main() {
     fs.writeFileSync(path.join(outputDir, "issue-body.md"), `${report.body}\n`);
   }
   if (process.env.GITHUB_OUTPUT) {
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, `issue=${report.issue}\ncache_save=${cache.save}\n`);
+    const automaticRelease = result.status === "new-version" && result.probe?.status === "accepted";
+    fs.appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `issue=${report.issue}\ncache_save=${cache.save}\nversion=${result.latestVersion || ""}\nauto_release=${automaticRelease}\nprobe_accepted=${result.probe?.status === "accepted"}\n`,
+    );
     if (cache.suffix) fs.appendFileSync(process.env.GITHUB_OUTPUT, `cache_suffix=${cache.suffix}\n`);
   }
   process.stdout.write(`${JSON.stringify({ issue: report.issue })}\n`);

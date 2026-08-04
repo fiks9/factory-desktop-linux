@@ -12,8 +12,10 @@ The watcher discovers a version through official metadata, then downloads that
 exact version from the official `downloads.factory.ai` S3 bucket. Do not replace
 the exact URL builder with the mutable latest-download redirect or hand-edit the
 cache index. `release/accepted-upstream.json` is the sole accepted-version
-authority; GitHub `releases/latest`, tags, drafts, and prereleases never advance
-it. Host/path/version drift fails closed.
+authority. The automatic watcher uses GitHub release tags only to avoid
+dispatching a duplicate release; tags, drafts, and prereleases do not advance
+it. Only the successful `publish` job records a new accepted version in the
+file. Host/path/version drift fails closed.
 
 Build an authorized local DMG with an absolute path and exact version:
 
@@ -133,10 +135,11 @@ and cache directories.
 
 ## Publish
 
-After local green verdict, push the reviewed commit and manually run the
-**Release** workflow from the protected default branch with exact Factory version
-(`factory_version`), explicit `wrapper_revision`, and a reviewed `source_ref` in
-that branch's history. For the contained 0.139.0 correction the values are
-`0.139.0`, `linux.1`, and `main`. Wait for
-`build-and-accept`; `publish` cannot run before it. Review `checksums.txt`,
-`build-info.json`, `patch-report.json`, and `acceptance-summary.json`.
+After local green verdict, push the reviewed commit. The scheduled upstream
+watcher will automatically dispatch the **Release** workflow for a newly
+accepted Factory version, select the next unused `linux.N`, and publish only
+after `build-and-accept` is green. Maintainers may still dispatch it manually
+from the protected default branch with exact `factory_version`, explicit
+`wrapper_revision`, and reviewed `source_ref`. Review `checksums.txt`,
+`build-info.json`, `patch-report.json`, and `acceptance-summary.json` before
+announcing the release.

@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   watch:
+    outputs:
+      auto_release: ${{ steps.summary.outputs.auto_release }}
+      latest_version: ${{ steps.summary.outputs.version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -92,3 +95,62 @@ jobs:
       - name: Enforce fail-closed verdict
         if: always() && steps.probe.outcome == 'failure'
         run: exit 1
+
+  auto-release:
+    needs: watch
+    if: needs.watch.outputs.auto_release == 'true'
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_VERSION: ${{ needs.watch.outputs.latest_version }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name' > "$RUNNER_TEMP/factory-release-tags.txt"
+          node scripts/auto-release.js \
+            --version "$FACTORY_VERSION" \
+            --probe-status accepted \
+            --tags-file "$RUNNER_TEMP/factory-release-tags.txt" \
+            | tee "$RUNNER_TEMP/factory-release-plan.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce release plan
+        env:
+          PLAN_ACTION: ${{ steps.plan.outputs.action }}
+        run: |
+          case "$PLAN_ACTION" in
+            dispatch|already-published) exit 0 ;;
+            *) printf 'Automatic release plan is fail-closed: %s\n' "$PLAN_ACTION" >&2; exit 1 ;;
+          esac
+      - name: Dispatch accepted release workflow
+        id: dispatch
+        if: steps.plan.outputs.action == 'dispatch'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_VERSION: ${{ steps.plan.outputs.factory_version }}
+          WRAPPER_REVISION: ${{ steps.plan.outputs.wrapper_revision }}
+        run: |
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f factory_version="$FACTORY_VERSION" \
+            -f wrapper_revision="$WRAPPER_REVISION" \
+            -f source_ref=main
+          printf 'Automatic release dispatched for Factory %s (%s).\n' "$FACTORY_VERSION" "$WRAPPER_REVISION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Report dispatch failure
+        if: steps.dispatch.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_VERSION: ${{ steps.plan.outputs.factory_version }}
+        run: |
+          title="[upstream-auto-release] Failed to dispatch Factory ${FACTORY_VERSION}"
+          body=$(printf 'Automatic release dispatch failed for Factory %s.\n\nWorkflow: %s/%s/actions/runs/%s\n' "$FACTORY_VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then gh issue comment "$existing" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          exit 1

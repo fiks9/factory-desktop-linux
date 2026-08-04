@@ -35,7 +35,7 @@ privileged live E2E verdict; Phase 5 does not claim fully unattended updates.
 
 ## Phase 6
 
-Daily upstream monitoring, manual exact-version releases, package-bound
-provenance, exact checksums, bounded patch drift diagnostics, blocking local
-release gates, and maintainer operations documentation. GitHub publication is
-possible only after the complete acceptance and package inspection verdict.
+Daily upstream monitoring, automatic exact-version release dispatch, package-
+bound provenance, exact checksums, bounded patch drift diagnostics, blocking
+local release gates, and maintainer operations documentation. GitHub publication
+is possible only after the complete acceptance and package inspection verdict.
