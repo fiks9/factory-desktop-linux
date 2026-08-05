@@ -106,6 +106,13 @@ test("automatic release planning dispatches only accepted new versions", () => {
   });
 });
 
+test("public release presentation omits the internal wrapper revision", () => {
+  const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
+  assert.match(workflow, /--title "Factory Desktop Linux \$FACTORY_RELEASE_VERSION"/);
+  assert.doesNotMatch(workflow, /Linux wrapper revision:/);
+  assert.doesNotMatch(workflow, /\(\$FACTORY_WRAPPER_REVISION\)/);
+});
+
 test("accepted upstream recording is monotonic and atomic", () => {
   const { updateAcceptedVersion } = require("../scripts/record-accepted-version");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-accepted-version-"));

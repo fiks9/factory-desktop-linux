@@ -188,13 +188,12 @@ jobs:
           notes=$(mktemp)
           {
             printf 'Unofficial Factory Desktop Linux build for Factory %s.\n\n' "$FACTORY_RELEASE_VERSION"
-            printf 'Linux wrapper revision: %s.\n\n' "$FACTORY_WRAPPER_REVISION"
             printf 'Acceptance metadata and checksum verification are included in the release assets.\n'
             printf 'This release is checksum-only unless detached .asc files are present.\n'
           } > "$notes"
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$FACTORY_SOURCE_COMMIT" \
-            --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION ($FACTORY_WRAPPER_REVISION)" \
+            --title "Factory Desktop Linux $FACTORY_RELEASE_VERSION" \
             --notes-file "$notes"
       - name: Record accepted upstream version
         if: ${{ inputs.source_ref == 'main' }}
