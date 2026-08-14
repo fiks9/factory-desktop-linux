@@ -124,9 +124,10 @@ function validatePackagedDaemonMode(files) {
   let packagedDroidBranch = false;
   let resolverName = null;
   for (const file of files) {
-    if (!file.content.includes("--enable-child-ipc")) continue;
     const builderAt = file.content.indexOf("--enable-child-ipc");
-    const builder = file.content.slice(Math.max(0, builderAt - 2200), builderAt + 900);
+    const builder = builderAt >= 0
+      ? file.content.slice(Math.max(0, builderAt - 2200), builderAt + 900)
+      : file.content;
     const branch = builder.match(/if\(([\w$]+)\.app\.isPackaged\)([\w$]+)=[\s\S]{0,1500}?else \2=([\w$]+)\(\);/);
     if (branch) {
       resolverName = branch[3];

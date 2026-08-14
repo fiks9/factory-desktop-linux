@@ -57,6 +57,14 @@ test("raw hardcoded transport bundle patches all required descriptors", async ()
   assert.equal(fs.existsSync(reportPath), true);
 });
 
+test("system daemon adoption survives removal of the legacy child IPC anchor", async () => {
+  const { asarPath } = await fixture(rawBundle().replace("/* --enable-child-ipc */", ""));
+  const report = await patchAsar({ asarPath });
+  const outcome = report.outcomes.find((item) => item.id === "system-daemon-adoption");
+  assert.equal(outcome.matched, true);
+  assert.equal(outcome.validationPassed, true);
+});
+
 test("patching preserves original unpacked ASAR files and companion tree", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-patcher-unpacked-"));
   const source = path.join(root, "source");

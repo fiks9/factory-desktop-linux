@@ -221,7 +221,7 @@ function systemDroid(files) {
 
 function adoption(files) {
   const id = "system-daemon-adoption"; const marker = MARKER(id);
-  const file = mainFile(files, (content) => content.includes("--enable-child-ipc") && content.includes("currentPort") && content.includes("async startInternal"));
+  const file = mainFile(files, (content) => content.includes("currentPort") && content.includes("async startInternal") && /this\.state=[\w$]+\.Starting/.test(content));
   if (!file) return result(id, false, false, false, []);
   if (file.content.includes(marker)) return result(id, true, false, true, [], { file: file.path, marker });
   const startPath = file.content.match(/async startInternal\(\)\{this\.state=([\w$]+)\.Starting[\s\S]{0,600}?this\.currentPort=([\w$]+);[\s\S]{0,600}?let ([\w$]+);if\(\2!==null\)/);
