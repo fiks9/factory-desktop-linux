@@ -102,6 +102,20 @@ test("check now detaches the long-running updater instead of timing out the buil
   assert.deepEqual(spawns, [["check-now"]]);
 });
 
+test("check now does not start a duplicate operation while the daemon is active", async () => {
+  const spawns = [];
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => envelope("checking"),
+    spawn: (args) => spawns.push(args),
+  });
+
+  const state = await bridge.checkNow();
+
+  assert.equal(state.linuxState, "checking");
+  assert.deepEqual(spawns, []);
+});
+
 test("retry check is available only from a failed state and starts one detached check", async () => {
   const spawns = [];
   const bridge = createBridge({
@@ -215,4 +229,40 @@ test("status IPC presents a failed transition once", async () => {
   await bridge.dispatch("getState", {});
 
   assert.equal(dialogs, 1);
+});
+
+test("startup sync checks an empty idle state once and publishes a later ready candidate", async () => {
+  const scheduled = [];
+  const spawns = [];
+  const messages = [];
+  const window = {
+    isDestroyed: () => false,
+    webContents: { send: (channel, state) => messages.push([channel, state.linuxState]) },
+  };
+  let statusCalls = 0;
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => {
+      statusCalls += 1;
+      return statusCalls <= 2 ? envelope("idle", { version: undefined, packagePath: undefined, packageSha256: undefined })
+        : envelope("ready-pending-exit", { version: "0.162.0" });
+    },
+    spawn: (args) => spawns.push(args),
+    windows: { getAllWindows: () => [window] },
+    app: { getVersion: () => "0.161.0" },
+    schedule: (callback, delay) => scheduled.push({ callback, delay }),
+  });
+
+  const first = await bridge.startBackgroundSync();
+
+  assert.equal(first.linuxState, "checking");
+  assert.deepEqual(spawns, [["check-now"]]);
+  assert.deepEqual(messages, [["updates:state", "idle"], ["updates:state", "checking"]]);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 250);
+
+  await scheduled.shift().callback();
+
+  assert.deepEqual(messages.at(-1), ["updates:state", "ready-pending-exit"]);
+  assert.deepEqual(spawns, [["check-now"]]);
 });

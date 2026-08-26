@@ -176,6 +176,7 @@ test("native updater patch loads the package bridge once and replaces all IPC ha
   assert.equal((patched.match(/\/usr\/lib\/factory-desktop\/update-bridge\.cjs/g) || []).length, 1);
   assert.match(patched, /FACTORY_UPDATE_MANAGER_UNAVAILABLE/);
   assert.match(patched, /linuxState:"update-manager-unavailable"/);
+  assert.match(patched, /factoryLinuxUpdateBridge\.startBackgroundSync\?\.\(\)/);
   for (const action of ["getState", "install", "checkNow"]) {
     assert.equal((patched.match(new RegExp(`\\.dispatch\\(\\"${action}\\"`, "g")) || []).length, 1, action);
   }

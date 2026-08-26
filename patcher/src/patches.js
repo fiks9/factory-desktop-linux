@@ -345,7 +345,7 @@ function nativeUpdater(files) {
     });
   }
   const appImageFallback = `{dispatch:async()=>{const state={schemaVersion:1,kind:"error",linuxState:"update-manager-unavailable",message:"Native updates are unavailable in AppImage"};for(const window of ${alias}.BrowserWindow.getAllWindows())window.isDestroyed()||window.webContents.send("updates:state",state);return state}}`;
-  const replacement = `${marker}(()=>{const ${bridgeName}=process.env.FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"?${appImageFallback}:require("/usr/lib/factory-desktop/update-bridge.cjs").createBridge({electron:${alias}});${span.ordered.map((handler) => `${alias}.ipcMain.handle("updates:${handler.action}",()=>${bridgeName}.dispatch("${handler.action}",{}))`).join(";")}})()`;
+  const replacement = `${marker}(()=>{const ${bridgeName}=process.env.FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"?${appImageFallback}:require("/usr/lib/factory-desktop/update-bridge.cjs").createBridge({electron:${alias}});${bridgeName}.startBackgroundSync?.();${span.ordered.map((handler) => `${alias}.ipcMain.handle("updates:${handler.action}",()=>${bridgeName}.dispatch("${handler.action}",{}))`).join(";")}})()`;
   const content = `${target.content.slice(0, span.start)}${replacement}${target.content.slice(span.end)}`;
   return result(id, true, true, false, [[target.path, content]], {
     file: target.path,

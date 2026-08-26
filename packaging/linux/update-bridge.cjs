@@ -6,6 +6,17 @@ const childProcess = require("node:child_process");
 const HELPER = "/usr/bin/factory-update-manager";
 const HELPER_TIMEOUT_MS = 5000;
 const MAX_TEXT_LENGTH = 512;
+const STARTUP_SYNC_DELAYS_MS = Object.freeze([250, 1000, 3000, 7000, 15000]);
+const ACTIVE_UPDATE_STATES = new Set(["checking", "downloading", "building", "validating"]);
+const STARTUP_TERMINAL_STATES = new Set([
+  "ready-pending-exit",
+  "installing",
+  "installed",
+  "install-failed-manual-action",
+  "rolled-back",
+  "failed",
+  "update-manager-unavailable",
+]);
 const LINUX_STATES = new Set([
   "idle",
   "checking",
@@ -152,7 +163,10 @@ function createBridge(overrides = {}) {
   const windows = overrides.windows || electron.BrowserWindow;
   const app = overrides.app || electron.app;
   const pid = overrides.pid || process.pid;
+  const schedule = overrides.schedule || ((callback, delay) => setTimeout(callback, delay));
   let previousTransition;
+  let startupSyncPromise;
+  let startupCheckRequested = false;
 
   function parentWindow() {
     return windows?.getFocusedWindow?.() || windows?.getAllWindows?.()[0];
@@ -185,7 +199,7 @@ function createBridge(overrides = {}) {
   async function checkNow() {
     if (!helperExists()) return unavailableState();
     const current = await getState();
-    if (current.linuxState === "ready-pending-exit" || current.linuxState === "installing" ||
+    if (ACTIVE_UPDATE_STATES.has(current.linuxState) || current.linuxState === "ready-pending-exit" || current.linuxState === "installing" ||
         current.linuxState === "install-failed-manual-action" ||
         current.linuxState === "update-manager-unavailable") {
       return current;
@@ -262,6 +276,30 @@ function createBridge(overrides = {}) {
     return current;
   }
 
+  function startupSyncTerminal(state) {
+    if (state.linuxState === "idle" && startupCheckRequested) return true;
+    return STARTUP_TERMINAL_STATES.has(state.linuxState);
+  }
+
+  async function startupSyncTick(index) {
+    let current = await dispatch("getState", {});
+    if (current.linuxState === "idle" && !current.version && !startupCheckRequested) {
+      startupCheckRequested = true;
+      current = await dispatch("checkNow", {});
+    }
+    if (!startupSyncTerminal(current) && index < STARTUP_SYNC_DELAYS_MS.length) {
+      schedule(() => startupSyncTick(index + 1), STARTUP_SYNC_DELAYS_MS[index]);
+    }
+    return current;
+  }
+
+  function startBackgroundSync() {
+    if (!startupSyncPromise) {
+      startupSyncPromise = startupSyncTick(0).catch((error) => failedState(error?.message));
+    }
+    return startupSyncPromise;
+  }
+
   async function invoke(action, payload = {}) {
     if (!new Set(["getState", "install", "checkNow"]).has(action)) {
       throw new Error("unsupported update bridge action");
@@ -286,7 +324,7 @@ function createBridge(overrides = {}) {
     return state;
   }
 
-  return Object.freeze({ getState, checkNow, install, pollOnce, invoke, dispatch });
+  return Object.freeze({ getState, checkNow, install, pollOnce, startBackgroundSync, invoke, dispatch });
 }
 
 module.exports = Object.freeze({
