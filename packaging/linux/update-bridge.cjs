@@ -7,6 +7,7 @@ const HELPER = "/usr/bin/factory-update-manager";
 const HELPER_TIMEOUT_MS = 5000;
 const MAX_TEXT_LENGTH = 512;
 const STARTUP_SYNC_DELAYS_MS = Object.freeze([250, 1000, 3000, 7000, 15000]);
+const ACTIVE_POLL_INTERVAL_MS = 30000;
 const ACTIVE_UPDATE_STATES = new Set(["checking", "downloading", "building", "validating"]);
 const STARTUP_TERMINAL_STATES = new Set([
   "ready-pending-exit",
@@ -167,6 +168,7 @@ function createBridge(overrides = {}) {
   let previousTransition;
   let startupSyncPromise;
   let startupCheckRequested = false;
+  let startupSyncScheduled = false;
 
   function parentWindow() {
     return windows?.getFocusedWindow?.() || windows?.getAllWindows?.()[0];
@@ -270,7 +272,11 @@ function createBridge(overrides = {}) {
           cancelId: 1,
           noLink: true,
         });
-        if (answer.response === 0) return checkNow();
+        if (answer.response === 0) {
+          const retried = await checkNow();
+          if (!startupSyncTerminal(retried)) queueStartupSync(0);
+          return retried;
+        }
       }
     }
     return current;
@@ -281,15 +287,25 @@ function createBridge(overrides = {}) {
     return STARTUP_TERMINAL_STATES.has(state.linuxState);
   }
 
+  function queueStartupSync(index) {
+    if (startupSyncScheduled) return;
+    startupSyncScheduled = true;
+    const delay = index > STARTUP_SYNC_DELAYS_MS.length
+      ? ACTIVE_POLL_INTERVAL_MS
+      : STARTUP_SYNC_DELAYS_MS[Math.min(Math.max(index - 1, 0), STARTUP_SYNC_DELAYS_MS.length - 1)];
+    schedule(async () => {
+      startupSyncScheduled = false;
+      await startupSyncTick(index);
+    }, delay);
+  }
+
   async function startupSyncTick(index) {
     let current = await dispatch("getState", {});
     if (current.linuxState === "idle" && !current.version && !startupCheckRequested) {
       startupCheckRequested = true;
       current = await dispatch("checkNow", {});
     }
-    if (!startupSyncTerminal(current) && index < STARTUP_SYNC_DELAYS_MS.length) {
-      schedule(() => startupSyncTick(index + 1), STARTUP_SYNC_DELAYS_MS[index]);
-    }
+    if (ACTIVE_UPDATE_STATES.has(current.linuxState)) queueStartupSync(index + 1);
     return current;
   }
 
@@ -317,6 +333,7 @@ function createBridge(overrides = {}) {
     const state = action === "getState"
       ? await pollOnce()
       : await invoke(action, payload);
+    if (action === "checkNow" && !startupSyncTerminal(state)) queueStartupSync(0);
     for (const window of windows?.getAllWindows?.() || []) {
       if (window?.isDestroyed?.()) continue;
       window?.webContents?.send?.("updates:state", state);

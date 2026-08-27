@@ -266,3 +266,67 @@ test("startup sync checks an empty idle state once and publishes a later ready c
   assert.deepEqual(messages.at(-1), ["updates:state", "ready-pending-exit"]);
   assert.deepEqual(spawns, [["check-now"]]);
 });
+
+test("retry resumes polling and publishes the ready candidate without reopening Factory", async () => {
+  const scheduled = [];
+  const messages = [];
+  const parent = { id: 12 };
+  const window = {
+    isDestroyed: () => false,
+    webContents: { send: (channel, state) => messages.push([channel, state.linuxState]) },
+  };
+  let statusCalls = 0;
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async (args) => {
+      if (args[0] === "check-now") return envelope("checking");
+      statusCalls += 1;
+      if (statusCalls === 1) return envelope("failed", { message: "Temporary network failure" });
+      if (statusCalls === 2) return envelope("checking");
+      return envelope("ready-pending-exit", { version: "0.162.1" });
+    },
+    spawn: () => {},
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    windows: { getFocusedWindow: () => parent, getAllWindows: () => [window] },
+    app: { getVersion: () => "0.161.0" },
+    schedule: (callback, delay) => scheduled.push({ callback, delay }),
+  });
+
+  await bridge.dispatch("getState", {});
+
+  assert.deepEqual(messages, [["updates:state", "checking"]]);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 250);
+
+  await scheduled.shift().callback();
+
+  assert.deepEqual(messages.at(-1), ["updates:state", "ready-pending-exit"]);
+});
+
+test("long-running active updates continue with a low-frequency poll after startup backoff", async () => {
+  const scheduled = [];
+  let calls = 0;
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => {
+      calls += 1;
+      return envelope("building");
+    },
+    windows: { getAllWindows: () => [] },
+    schedule: (callback, delay) => scheduled.push({ callback, delay }),
+  });
+
+  await bridge.startBackgroundSync();
+  assert.equal(scheduled.length, 1);
+  await scheduled.shift().callback();
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 1000);
+
+  for (let index = 0; index < 4; index += 1) {
+    await scheduled.shift().callback();
+  }
+
+  assert.equal(calls > 5, true);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 30000);
+});
