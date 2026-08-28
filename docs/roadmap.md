@@ -21,17 +21,24 @@ Blocking package hygiene gate, AppImage, and clean update-builder staging.
 
 ## Phase 4
 
-Rust updater MVP: check, status, rebuild, install, rollback, state machine,
-workspaces, content-addressed downloads, and known-good retention. Native
-packages carry the updater; AppImage stays updater-unavailable.
+Rust updater MVP: metadata checks, status, user-triggered preparation, install,
+rollback, state machine, workspaces, content-addressed downloads, and
+known-good retention. Native packages carry the updater; AppImage stays
+updater-unavailable. Startup and daemon checks do not prepare candidates.
 
 ## Phase 5
 
-In-app update UX, app-exit installation, polkit detection, terminal fallback,
-and opt-in approval preparation backed by root-side approval and attestation.
-User-owned manifests, package paths, and hashes are not sufficient authorization
-for root installation. Passwordless activation remains blocked until a separate
-privileged live E2E verdict; Phase 5 does not claim fully unattended updates.
+In-app update UX with a visible Update action, metadata-only startup/daemon
+checks, user-triggered download/build/validation, polkit authentication only
+after preparation, controlled application exit, automatic relaunch, terminal
+fallback, and opt-in approval preparation backed by root-side approval and
+attestation. `updates:install` starts the operation and does not quit the app
+before preparation. One process restart remains necessary for new Electron code
+to load, but it is performed automatically; users do not manually restart.
+User-owned manifests, package paths, and hashes are not sufficient
+authorization for root installation. Passwordless activation remains blocked
+until a separate privileged live E2E verdict; Phase 5 does not claim fully
+unattended updates.
 
 ## Phase 6
 

@@ -80,7 +80,7 @@ fn options() -> AfterExitOptions {
 
 #[test]
 fn install_waits_for_exit_then_relaunches_verified_install_once() {
-    let (_root, paths, store) = setup(State::ReadyPendingExit);
+    let (_root, paths, store) = setup(State::ReadyToInstall);
     let backend = FakeBackend::new(vec![true, true, false], State::Installed);
 
     run_after_exit(&paths, &store, &options(), &backend).unwrap();
@@ -96,7 +96,7 @@ fn install_waits_for_exit_then_relaunches_verified_install_once() {
 
 #[test]
 fn rollback_relaunches_once_but_manual_action_never_relaunches() {
-    let (_root, paths, store) = setup(State::ReadyPendingExit);
+    let (_root, paths, store) = setup(State::ReadyToInstall);
     let rollback = FakeBackend::new(vec![false], State::RolledBack);
     run_after_exit(&paths, &store, &options(), &rollback).unwrap();
     assert_eq!(rollback.relaunches.get(), 1);
@@ -104,7 +104,7 @@ fn rollback_relaunches_once_but_manual_action_never_relaunches() {
 
     store
         .save(&StateRecord {
-            state: State::ReadyPendingExit,
+            state: State::ReadyToInstall,
             install_requested: true,
             ..StateRecord::default()
         })
@@ -121,7 +121,7 @@ fn rollback_relaunches_once_but_manual_action_never_relaunches() {
 
 #[test]
 fn bounded_wait_times_out_without_install_or_relaunch() {
-    let (_root, paths, store) = setup(State::ReadyPendingExit);
+    let (_root, paths, store) = setup(State::ReadyToInstall);
     let backend = FakeBackend::new(vec![true, true, true, true], State::Installed);
 
     assert!(run_after_exit(&paths, &store, &options(), &backend).is_err());
@@ -129,14 +129,14 @@ fn bounded_wait_times_out_without_install_or_relaunch() {
     assert_eq!(backend.installs.get(), 0);
     assert_eq!(backend.relaunches.get(), 0);
     let state = store.load().unwrap();
-    assert_eq!(state.state, State::ReadyPendingExit);
+    assert_eq!(state.state, State::ReadyToInstall);
     assert!(!state.install_requested);
     assert!(state.relaunch_error.unwrap().contains("timed out"));
 }
 
 #[test]
 fn relaunch_failure_preserves_verified_state_and_records_actionable_error() {
-    let (_root, paths, store) = setup(State::ReadyPendingExit);
+    let (_root, paths, store) = setup(State::ReadyToInstall);
     let backend = FakeBackend::new(vec![false], State::Installed);
     backend.relaunch_fails.set(true);
 
@@ -154,7 +154,7 @@ fn relaunch_failure_preserves_verified_state_and_records_actionable_error() {
 
 #[test]
 fn duplicate_after_exit_helper_is_blocked_by_a_separate_lock() {
-    let (_root, paths, store) = setup(State::ReadyPendingExit);
+    let (_root, paths, store) = setup(State::ReadyToInstall);
     let _lock =
         factory_update_manager::locks::UpdateLock::acquire(&paths.after_exit_lock_file()).unwrap();
     let backend = FakeBackend::new(vec![false], State::Installed);

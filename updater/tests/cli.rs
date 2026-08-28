@@ -54,32 +54,31 @@ fn candidate(paths: &Paths, id: &str, version: &str) -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn rejected_candidate_is_recorded_as_failed() {
+fn metadata_check_records_available_update_without_building_candidate() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
-    let dmg = root.path().join("fixture.dmg");
+    let bin = root.path().join("bin");
     fs::create_dir(&home).unwrap();
-    fs::write(&dmg, "not a real DMG").unwrap();
-
-    let status = Command::new(env!("CARGO_BIN_EXE_factory-update-manager"))
-        .env("HOME", &home)
-        .arg("--builder-root")
-        .arg(root.path().join("missing-builder"))
-        .arg("check-now")
-        .arg("--dmg")
-        .arg(&dmg)
-        .arg("--version")
-        .arg("0.139.0")
-        .arg("--format")
-        .arg("deb")
-        .status()
+    fs::create_dir(&bin).unwrap();
+    let query = bin.join("dpkg-query");
+    fs::write(&query, "#!/bin/sh\nprintf '0.139.0-1'\n").unwrap();
+    fs::set_permissions(&query, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = command(root.path())
+        .env("PATH", &bin)
+        .args(["check-now", "--version", "0.140.0", "--format", "deb"])
+        .output()
         .unwrap();
-
-    assert!(!status.success());
-    let state_path = home.join(".local/state/factory-update-manager/state.json");
-    let state: StateRecord = serde_json::from_slice(&fs::read(state_path).unwrap()).unwrap();
-    assert_eq!(state.state, State::Failed);
-    assert!(state.message.unwrap().contains("candidate rejected"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = StateStore::new(test_paths(root.path()).state_file())
+        .load()
+        .unwrap();
+    assert_eq!(state.state, State::UpdateAvailable);
+    assert_eq!(state.available_version.as_deref(), Some("0.140.0"));
+    assert!(state.candidate_manifest.is_none());
 }
 
 #[test]
@@ -180,7 +179,7 @@ fn polkit_failure_retains_manual_action_candidate_through_cleanup() {
     let store = StateStore::new(paths.state_file());
     store
         .save(&StateRecord {
-            state: State::ReadyPendingExit,
+            state: State::ReadyToInstall,
             candidate_id: Some("candidate-139".into()),
             version: Some("0.139.0".into()),
             package_path: Some(package.clone()),
@@ -197,7 +196,9 @@ fn polkit_failure_retains_manual_action_candidate_through_cleanup() {
 
     let status = command(root.path())
         .env("PATH", &bin)
-        .arg("install-ready")
+        .arg("update")
+        .arg("--pid")
+        .arg("4242")
         .status()
         .unwrap();
 
@@ -219,7 +220,7 @@ fn explicit_discard_removes_a_ready_candidate_and_returns_to_idle() {
     let store = StateStore::new(paths.state_file());
     store
         .save(&StateRecord {
-            state: State::ReadyPendingExit,
+            state: State::ReadyToInstall,
             candidate_id: Some("candidate-142".into()),
             version: Some("0.142.0".into()),
             package_path: Some(package.clone()),
@@ -277,7 +278,7 @@ fn deb_wrapper_revision_does_not_trigger_a_same_factory_version_build() {
 }
 
 #[test]
-fn prepare_install_marks_one_request_and_rejects_a_duplicate() {
+fn update_rejects_a_duplicate_install_request() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("home")).unwrap();
     let paths = test_paths(root.path());
@@ -286,31 +287,22 @@ fn prepare_install_marks_one_request_and_rejects_a_duplicate() {
     let store = StateStore::new(paths.state_file());
     store
         .save(&StateRecord {
-            state: State::ReadyPendingExit,
+            state: State::ReadyToInstall,
             candidate_id: Some("candidate-140".into()),
             version: Some("0.140.0".into()),
             package_path: Some(package),
             package_sha256: Some("a".repeat(64)),
             candidate_manifest: Some(manifest),
+            install_requested: true,
             ..StateRecord::default()
         })
         .unwrap();
-
-    let first = command(root.path())
-        .args(["prepare-install", "--pid", "4242", "--no-spawn"])
+    let output = command(root.path())
+        .args(["update", "--pid", "4242"])
         .output()
         .unwrap();
-    assert!(first.status.success());
-    let envelope: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
-    assert_eq!(envelope["installRequested"], true);
-    assert!(store.load().unwrap().install_requested);
-
-    let second = command(root.path())
-        .args(["prepare-install", "--pid", "4242", "--no-spawn"])
-        .status()
-        .unwrap();
-    assert!(!second.success());
-    assert_eq!(store.load().unwrap().state, State::ReadyPendingExit);
+    assert!(!output.status.success());
+    assert_eq!(store.load().unwrap().state, State::ReadyToInstall);
 }
 
 #[test]

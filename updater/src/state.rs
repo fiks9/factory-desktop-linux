@@ -1,24 +1,67 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum State {
     Idle,
     Checking,
+    UpdateAvailable,
     Downloading,
     Building,
     Validating,
-    ReadyPendingExit,
+    ReadyToInstall,
     Installing,
     Installed,
     InstallFailedManualAction,
     RolledBack,
     Failed,
+}
+
+impl<'de> Deserialize<'de> for State {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "idle" => Ok(Self::Idle),
+            "checking" => Ok(Self::Checking),
+            "update-available" => Ok(Self::UpdateAvailable),
+            "downloading" => Ok(Self::Downloading),
+            "building" => Ok(Self::Building),
+            "validating" => Ok(Self::Validating),
+            "ready-to-install" | "ready-pending-exit" => Ok(Self::ReadyToInstall),
+            "installing" => Ok(Self::Installing),
+            "installed" => Ok(Self::Installed),
+            "install-failed-manual-action" => Ok(Self::InstallFailedManualAction),
+            "rolled-back" => Ok(Self::RolledBack),
+            "failed" => Ok(Self::Failed),
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown updater state: {value}"
+            ))),
+        }
+    }
+}
+
+impl State {
+    pub fn is_preparation_active(self) -> bool {
+        matches!(
+            self,
+            Self::Checking | Self::Downloading | Self::Building | Self::Validating
+        )
+    }
+
+    pub fn requires_candidate(self) -> bool {
+        matches!(
+            self,
+            Self::ReadyToInstall | Self::Installing | Self::InstallFailedManualAction
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +70,8 @@ pub struct StateRecord {
     pub schema_version: u32,
     pub state: State,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +108,7 @@ impl Default for StateRecord {
             schema_version: 2,
             state: State::Idle,
             updated_at: Utc::now(),
+            available_version: None,
             candidate_id: None,
             version: None,
             package_path: None,

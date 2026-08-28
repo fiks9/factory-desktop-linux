@@ -9,10 +9,11 @@ const HELPER_AVAILABLE = { helperExists: () => true };
 const STATES = {
   idle: "idle",
   checking: "checking",
+  "update-available": "available",
   downloading: "downloading",
   building: "downloading",
   validating: "downloading",
-  "ready-pending-exit": "available",
+  "ready-to-install": "available",
   installing: "downloading",
   installed: "idle",
   "install-failed-manual-action": "error",
@@ -21,43 +22,58 @@ const STATES = {
 };
 
 function envelope(linuxState, extra = {}) {
+  const available = linuxState === "update-available";
+  const candidate = !available && !["idle", "checking"].includes(linuxState);
   return JSON.stringify({
     schemaVersion: 1,
     kind: STATES[linuxState],
     linuxState,
-    version: "0.140.0",
-    packagePath: "/safe/factory.deb",
-    packageSha256: "a".repeat(64),
+    version: candidate ? "0.140.0" : undefined,
+    availableVersion: available ? "0.140.0" : undefined,
+    updatedAt: "2026-08-28T00:00:00Z",
+    packagePath: candidate ? "/safe/factory.deb" : undefined,
+    packageSha256: candidate ? "a".repeat(64) : undefined,
+    installRequested: false,
+    relaunchPending: false,
     ...extra,
   });
 }
 
-test("bridge parses every schema-1 Rust state into a compatibility kind", () => {
+function noSchedule() {
+  return () => {};
+}
+
+test("bridge parses every schema-1 Linux state into a compatibility kind", () => {
   for (const [linuxState, kind] of Object.entries(STATES)) {
     const state = parseStatus(envelope(linuxState));
     assert.equal(state.linuxState, linuxState);
     assert.equal(state.kind, kind);
   }
+  assert.throws(() => parseStatus(envelope("ready-pending-exit")), /state/);
 });
 
-test("available update exposes the current and latest versions expected by Factory renderer", async () => {
+test("metadata update exposes current and available versions", async () => {
   const bridge = createBridge({
     ...HELPER_AVAILABLE,
-    run: async () => envelope("ready-pending-exit", { version: "0.143.0" }),
+    run: async () => envelope("update-available", { availableVersion: "0.143.0" }),
     app: { getVersion: () => "0.142.0" },
   });
 
   const state = await bridge.getState();
 
   assert.equal(state.kind, "available");
+  assert.equal(state.linuxState, "update-available");
   assert.equal(state.currentVersion, "0.142.0");
+  assert.equal(state.availableVersion, "0.143.0");
   assert.equal(state.latestVersion, "0.143.0");
 });
 
-test("bridge rejects invalid JSON, schema, state, and untrusted text", () => {
+test("bridge rejects invalid JSON, schema, state, fields, and untrusted text", () => {
   assert.throws(() => parseStatus("not json"), /invalid JSON/);
   assert.throws(() => parseStatus(JSON.stringify({ schemaVersion: 2 })), /schema/);
   assert.throws(() => parseStatus(envelope("unknown")), /state/);
+  assert.throws(() => parseStatus(envelope("idle", { updatedAt: "not-a-timestamp" })), /timestamp/);
+  assert.throws(() => parseStatus(envelope("ready-to-install", { packageSha256: "not-a-hash" })), /hash/);
   const state = parseStatus(envelope("failed", {
     message: `<img src=x onerror=alert(1)>${"x".repeat(2000)}`,
   }));
@@ -83,7 +99,7 @@ test("bridge exposes only whitelisted actions with empty validated payloads", as
   assert.equal((await bridge.invoke("getState", {})).linuxState, "idle");
 });
 
-test("check now detaches the long-running updater instead of timing out the build", async () => {
+test("check now performs a metadata-only detached check", async () => {
   const runs = [];
   const spawns = [];
   const bridge = createBridge({
@@ -100,9 +116,10 @@ test("check now detaches the long-running updater instead of timing out the buil
   assert.equal(state.linuxState, "checking");
   assert.deepEqual(runs, [["status", "--json"]]);
   assert.deepEqual(spawns, [["check-now"]]);
+  assert.equal(spawns.some((args) => args[0] === "update"), false);
 });
 
-test("check now does not start a duplicate operation while the daemon is active", async () => {
+test("check now does not start a duplicate operation while the updater is active", async () => {
   const spawns = [];
   const bridge = createBridge({
     ...HELPER_AVAILABLE,
@@ -116,19 +133,125 @@ test("check now does not start a duplicate operation while the daemon is active"
   assert.deepEqual(spawns, []);
 });
 
-test("retry check is available only from a failed state and starts one detached check", async () => {
+test("visible update starts one detached update operation without quitting", async () => {
+  const calls = [];
   const spawns = [];
+  const scheduled = [];
   const bridge = createBridge({
     ...HELPER_AVAILABLE,
-    run: async () => envelope("failed", { message: "Rejected" }),
+    run: async () => envelope("update-available", { availableVersion: "0.143.0" }),
     spawn: (args) => spawns.push(args),
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    schedule: (callback, delay) => scheduled.push({ callback, delay }),
+    app: {
+      getVersion: () => "0.142.0",
+      quit: () => calls.push("quit"),
+      relaunch: () => calls.push("relaunch"),
+    },
+    pid: 4242,
+  });
+
+  const first = await bridge.install();
+  const second = await bridge.install();
+
+  assert.equal(first.linuxState, "downloading");
+  assert.equal(first.kind, "downloading");
+  assert.deepEqual(spawns, [["update", "--pid", "4242"]]);
+  assert.equal(second.linuxState, "update-available");
+  assert.deepEqual(calls, []);
+  assert.ok(scheduled.length >= 1);
+});
+
+test("ready-to-install exits once for the active user operation", async () => {
+  const calls = [];
+  const statuses = [
+    envelope("update-available", { availableVersion: "0.143.0" }),
+    envelope("building", { version: "0.143.0" }),
+    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64) }),
+    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64) }),
+  ];
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => statuses.shift(),
+    spawn: () => {},
+    schedule: noSchedule(),
+    app: {
+      getVersion: () => "0.142.0",
+      quit: () => calls.push("quit"),
+      relaunch: () => calls.push("relaunch"),
+    },
+    pid: 4242,
+  });
+
+  await bridge.install();
+  assert.deepEqual(calls, []);
+  assert.equal((await bridge.pollOnce()).linuxState, "building");
+  assert.equal((await bridge.pollOnce()).linuxState, "ready-to-install");
+  assert.equal((await bridge.pollOnce()).linuxState, "ready-to-install");
+
+  assert.deepEqual(calls, ["quit"]);
+});
+
+test("persisted installed or rolled-back state does not exit or relaunch a new bridge", async () => {
+  for (const linuxState of ["installed", "rolled-back"]) {
+    const calls = [];
+    const bridge = createBridge({
+      ...HELPER_AVAILABLE,
+      run: async () => envelope(linuxState),
+      schedule: noSchedule(),
+      app: {
+        getVersion: () => "0.142.0",
+        quit: () => calls.push("quit"),
+        relaunch: () => calls.push("relaunch"),
+      },
+    });
+
+    assert.equal((await bridge.pollOnce()).linuxState, linuxState);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("manual dialog copies command only and never starts or quits", async () => {
+  const calls = [];
+  const copied = [];
+  const parent = { id: 9 };
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => envelope("install-failed-manual-action", {
+      manualCommand: "sudo factory-update-manager reconcile-install",
+    }),
+    dialog: { showMessageBox: async (window, options) => {
+      assert.equal(window, parent);
+      assert.deepEqual(options.buttons, ["Copy command", "Dismiss"]);
+      return { response: 0 };
+    } },
+    clipboard: { writeText: (value) => copied.push(value) },
+    windows: { getFocusedWindow: () => parent, getAllWindows: () => [parent] },
+    app: { quit: () => calls.push("quit"), relaunch: () => calls.push("relaunch") },
+    schedule: noSchedule(),
+  });
+
+  await bridge.install();
+
+  assert.deepEqual(copied, ["sudo factory-update-manager reconcile-install"]);
+  assert.deepEqual(calls, []);
+});
+
+test("failed transition offers one explicit retry dialog, not a retry loop", async () => {
+  let dialogs = 0;
+  const calls = [];
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async (args) => { calls.push(args); return envelope("failed", { message: "Rejected" }); },
+    dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
     windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
+    schedule: noSchedule(),
   });
 
   await bridge.pollOnce();
+  await bridge.pollOnce();
 
-  assert.deepEqual(spawns, [["check-now"]]);
+  assert.equal(dialogs, 1);
+  assert.equal(calls.filter((args) => args[0] === "check-now").length, 0);
 });
 
 test("dispatch broadcasts only validated state through updates:state", async () => {
@@ -149,89 +272,7 @@ test("dispatch broadcasts only validated state through updates:state", async () 
   assert.deepEqual(messages, [["updates:state", state]]);
 });
 
-test("ready install requires a parented confirmation then prepares and quits", async () => {
-  const calls = [];
-  const parent = { id: 7 };
-  const bridge = createBridge({
-    ...HELPER_AVAILABLE,
-    run: async (args) => {
-      calls.push(args);
-      return args[0] === "status" ? envelope("ready-pending-exit") : envelope("ready-pending-exit", { installRequested: true });
-    },
-    dialog: { showMessageBox: async (window, options) => {
-      assert.equal(window, parent);
-      assert.deepEqual(options.buttons, ["Install and restart", "Cancel"]);
-      return { response: 0 };
-    } },
-    windows: { getFocusedWindow: () => parent, getAllWindows: () => [parent] },
-    app: { getVersion: () => "0.139.0", quit: () => calls.push(["app.quit"]) },
-    pid: 4242,
-  });
-
-  await bridge.install();
-
-  assert.deepEqual(calls[1], ["prepare-install", "--pid", "4242"]);
-  assert.deepEqual(calls[2], ["app.quit"]);
-});
-
-test("manual dialog copies command only and dismiss does not discard candidate", async () => {
-  const calls = [];
-  const copied = [];
-  const parent = { id: 9 };
-  const bridge = createBridge({
-    ...HELPER_AVAILABLE,
-    run: async (args) => {
-      calls.push(args);
-      return envelope("install-failed-manual-action", { manualCommand: "sudo factory-update-manager reconcile-install" });
-    },
-    dialog: { showMessageBox: async (window, options) => {
-      assert.equal(window, parent);
-      assert.deepEqual(options.buttons, ["Copy command", "Dismiss"]);
-      return { response: 0 };
-    } },
-    clipboard: { writeText: (value) => copied.push(value) },
-    windows: { getFocusedWindow: () => parent, getAllWindows: () => [parent] },
-  });
-
-  await bridge.install();
-
-  assert.deepEqual(copied, ["sudo factory-update-manager reconcile-install"]);
-  assert.equal(calls.length, 1);
-});
-
-test("failed transition offers one retry dialog, not one per poll", async () => {
-  let dialogs = 0;
-  const calls = [];
-  const bridge = createBridge({
-    ...HELPER_AVAILABLE,
-    run: async (args) => { calls.push(args); return envelope("failed", { message: "Rejected" }); },
-    dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
-    windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
-  });
-
-  await bridge.pollOnce();
-  await bridge.pollOnce();
-
-  assert.equal(dialogs, 1);
-  assert.equal(calls.filter((args) => args[0] === "check-now").length, 0);
-});
-
-test("status IPC presents a failed transition once", async () => {
-  let dialogs = 0;
-  const bridge = createBridge({
-    ...HELPER_AVAILABLE,
-    run: async () => envelope("failed", { message: "Rejected" }),
-    dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
-    windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
-  });
-
-  await bridge.dispatch("getState", {});
-  await bridge.dispatch("getState", {});
-
-  assert.equal(dialogs, 1);
-});
-
-test("startup sync checks an empty idle state once and publishes a later ready candidate", async () => {
+test("startup sync checks metadata once and publishes update-available without preparing", async () => {
   const scheduled = [];
   const spawns = [];
   const messages = [];
@@ -244,8 +285,9 @@ test("startup sync checks an empty idle state once and publishes a later ready c
     ...HELPER_AVAILABLE,
     run: async () => {
       statusCalls += 1;
-      return statusCalls <= 2 ? envelope("idle", { version: undefined, packagePath: undefined, packageSha256: undefined })
-        : envelope("ready-pending-exit", { version: "0.162.0" });
+      return statusCalls <= 2
+        ? envelope("idle")
+        : envelope("update-available", { availableVersion: "0.162.0" });
     },
     spawn: (args) => spawns.push(args),
     windows: { getAllWindows: () => [window] },
@@ -263,47 +305,12 @@ test("startup sync checks an empty idle state once and publishes a later ready c
 
   await scheduled.shift().callback();
 
-  assert.deepEqual(messages.at(-1), ["updates:state", "ready-pending-exit"]);
+  assert.deepEqual(messages.at(-1), ["updates:state", "update-available"]);
   assert.deepEqual(spawns, [["check-now"]]);
+  assert.equal(spawns.some((args) => args[0] === "update"), false);
 });
 
-test("retry resumes polling and publishes the ready candidate without reopening Factory", async () => {
-  const scheduled = [];
-  const messages = [];
-  const parent = { id: 12 };
-  const window = {
-    isDestroyed: () => false,
-    webContents: { send: (channel, state) => messages.push([channel, state.linuxState]) },
-  };
-  let statusCalls = 0;
-  const bridge = createBridge({
-    ...HELPER_AVAILABLE,
-    run: async (args) => {
-      if (args[0] === "check-now") return envelope("checking");
-      statusCalls += 1;
-      if (statusCalls === 1) return envelope("failed", { message: "Temporary network failure" });
-      if (statusCalls === 2) return envelope("checking");
-      return envelope("ready-pending-exit", { version: "0.162.1" });
-    },
-    spawn: () => {},
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
-    windows: { getFocusedWindow: () => parent, getAllWindows: () => [window] },
-    app: { getVersion: () => "0.161.0" },
-    schedule: (callback, delay) => scheduled.push({ callback, delay }),
-  });
-
-  await bridge.dispatch("getState", {});
-
-  assert.deepEqual(messages, [["updates:state", "checking"]]);
-  assert.equal(scheduled.length, 1);
-  assert.equal(scheduled[0].delay, 250);
-
-  await scheduled.shift().callback();
-
-  assert.deepEqual(messages.at(-1), ["updates:state", "ready-pending-exit"]);
-});
-
-test("long-running active updates continue with a low-frequency poll after startup backoff", async () => {
+test("long-running active updates continue with bounded helper polls", async () => {
   const scheduled = [];
   let calls = 0;
   const bridge = createBridge({

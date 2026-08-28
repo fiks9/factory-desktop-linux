@@ -75,8 +75,10 @@ polkit policy, or `systemd` user services.
   and a product-named executable.
 - Package hygiene checks for staged and extracted `.deb`, `.rpm`, and AppImage
   artifacts.
-- A Rust update manager for native packages with after-exit installation,
-  package-manager verification, known-good retention, and rollback support.
+- A Rust update manager for native packages with metadata-only startup and
+  daemon checks, user-triggered download/build/validation, polkit-authenticated
+  installation, automatic controlled relaunch, package-manager verification,
+  known-good retention, and rollback support.
 - Package-bound provenance, checksums, bounded diagnostics, and an automatic
   release acceptance workflow.
 
@@ -122,25 +124,43 @@ acceptance profile passes. See [Architecture](docs/architecture.md),
 ## Updates
 
 Native `.deb` and `.rpm` packages install `factory-update-manager` and a
-`systemd --user` service. The manager checks on a six-hour default interval,
-builds candidates as the desktop user, accepts them only after package
-inspection, and waits for Factory Desktop to exit before requesting
-installation. Successful install and rollback states require an exact
-package-manager version query.
+`systemd --user` service. Startup and the six-hour daemon check query upstream
+metadata only: they compare the latest exact upstream version with the
+installed package and do not download, build, package, or validate anything.
+`check-now` has the same metadata-only behavior.
+
+When the visible **Update** button is clicked, the bridge starts
+`factory-update-manager update --pid PID`. This is the only path that downloads
+the exact DMG, builds an isolated candidate, and validates the package. After
+preparation reaches `ready-to-install`, polkit asks for authentication and the
+updater installs the candidate. `updates:install` does not quit Factory before
+preparation.
+
+The updater then performs one controlled process exit and automatically
+relaunches `/opt/Factory/factory-desktop-launcher` after an exact
+package-manager verification of `installed` or `rolled-back`. No manual
+restart is required. One process restart is still necessary for newly
+installed Electron code to load, and this relaunch is the automatic restart.
 
 The normal privileged path requires polkit authentication. If polkit is
-unavailable or denied, the updater records an explicit terminal command for the
-user to run manually. The unattended approval architecture exists as an
-explicit opt-in, but passwordless installation is not active:
+unavailable or denied, the updater records an explicit terminal command for
+the user to run manually. The renderer may copy the updater-owned
+`manualCommand`, but cannot execute arbitrary paths or commands. The opt-in
+approval architecture exists, but passwordless installation is not active:
 
 - `install-approved-package` remains `allow_active=no`.
 - `unattended = true` prepares approval requests but does not bypass
   authentication.
 - Fully unattended updates are neither enabled nor claimed.
-- AppImage does not have a privileged native updater.
+- AppImage does not have a privileged native updater or update daemon.
 
-Read [Update manager](docs/update-manager.md) for the state machine, commands,
-and privilege boundary.
+The external Linux state names are `idle`, `checking`, `update-available`,
+`downloading`, `building`, `validating`, `ready-to-install`, `installing`,
+`installed`, `install-failed-manual-action`, `rolled-back`, and `failed`.
+An active operation that crashes or becomes stale resolves to a terminal
+failure/manual-action state rather than leaving an eternal spinner. Read
+[Update manager](docs/update-manager.md) for commands, recovery, and the
+privilege boundary.
 
 ## Security model
 

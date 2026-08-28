@@ -70,7 +70,7 @@ fn schema_one_state_migrates_to_schema_two_defaults() {
     let state = StateStore::new(state_file).load().unwrap();
 
     assert_eq!(state.schema_version, 2);
-    assert_eq!(state.state, State::ReadyPendingExit);
+    assert_eq!(state.state, State::ReadyToInstall);
     assert_eq!(state.candidate_id.as_deref(), Some("candidate-139"));
     assert_eq!(state.manual_command, None);
     assert_eq!(state.notification_dedupe_key, None);
@@ -173,7 +173,7 @@ fn cleanup_keeps_only_a_ready_candidate_workspace() {
     fs::create_dir_all(&stale).unwrap();
 
     let ready = StateRecord {
-        state: State::ReadyPendingExit,
+        state: State::ReadyToInstall,
         candidate_id: Some("candidate-139".into()),
         ..StateRecord::default()
     };
@@ -208,7 +208,7 @@ fn daemon_interval_defaults_to_six_hours_and_is_configurable() {
 #[test]
 fn daemon_blocks_candidate_replacement_for_pending_install_states() {
     for state in [
-        State::ReadyPendingExit,
+        State::ReadyToInstall,
         State::Installing,
         State::InstallFailedManualAction,
     ] {

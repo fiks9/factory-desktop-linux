@@ -86,8 +86,11 @@ only after structural/version acceptance. Do not hand-edit this index.
 | StartupWMClass | `Factory` present |
 | keyring | `FACTORY_DISABLE_KEYRING=1` present |
 | update bridge | fixed native path/mode; absent from AppImage |
-| daemon adoption | health endpoint and 15-second validator pass |
-| after-exit and relaunch tests | bounded wait, one install, one verified relaunch |
+| metadata-only checks | startup, daemon, and `check-now` never download/build/validate |
+| user-triggered preparation | Update click invokes `update --pid PID`; states reach downloading/building/validating/ready-to-install |
+| authenticated install | polkit is requested only after preparation; package-manager version is exact |
+| controlled relaunch | one verified install/rollback, one automatic relaunch; no manual restart step |
+| stale-operation recovery | crash/stale active state resolves to terminal failure/manual action, not an eternal spinner |
 | approval security tests | traversal/hash/expiry/replay/ownership reject |
 | rollback verification | package query equals known-good version |
 
@@ -102,22 +105,27 @@ only after structural/version acceptance. Do not hand-edit this index.
 - Keyring/OAuth: confirm `FACTORY_DISABLE_KEYRING=1`, protocol MIME, and
   `xdg-mime query default x-scheme-handler/factory-desktop`.
 - Protocol handler: validate the desktop file and run `update-desktop-database`.
+- Updater metadata check: inspect `factory-update-manager status --json` and
+  updater logs. `check-now` is metadata-only and must not create a candidate.
+- Update operation: exercise the visible Update action or
+  `factory-update-manager update --pid PID`; retain diagnostics for each state.
+  Do not trigger installation by quitting Factory before `ready-to-install`.
 - Polkit/manual fallback: inspect `factory-update-manager status --json`, copy
-  updater-owned `manualCommand`, then run `reconcile-install` only after install.
+  updater-owned `manualCommand`, then run `reconcile-install` only after the
+  authenticated command completes. Never execute arbitrary renderer paths.
 - Updater daemon: inspect `systemctl --user status factory-update-manager.service`
   and `journalctl --user -u factory-update-manager.service`.
 
 ## Rollback
 
-Close Factory, inspect state and known-good metadata, then authenticate:
+Inspect state and known-good metadata, then authenticate the documented rollback
+command. Rollback succeeds only when the post-install package query returns the
+exact known-good version; the updater then performs its one automatic relaunch.
+Never live-test downgrade/rollback without backup and explicit operator approval.
 
 ```bash
 sudo /usr/bin/factory-update-manager rollback
 ```
-
-Rollback succeeds only when the post-install package query returns the exact
-known-good version. Never live-test downgrade/rollback without backup and
-explicit operator approval.
 
 ## Safe Cleanup
 
@@ -129,9 +137,9 @@ gio trash -- /absolute/repo/dist
 gio trash -- /absolute/repo/work
 ```
 
-Do not remove updater workspaces referenced by `ReadyPendingExit`, `Installing`,
-or `InstallFailedManualAction`. Never target the repository root or broad home
-and cache directories.
+Do not remove updater workspaces referenced by `ready-to-install`, `installing`,
+or `install-failed-manual-action`. Never target the repository root or broad
+home and cache directories.
 
 ## Publish
 
@@ -143,3 +151,4 @@ from the protected default branch with exact `factory_version`, explicit
 `wrapper_revision`, and reviewed `source_ref`. Review `checksums.txt`,
 `build-info.json`, `patch-report.json`, and `acceptance-summary.json` before
 announcing the release.
+The controlled relaunch uses the updater's bounded after-exit wait for Factory to exit before authenticated installation; this is automatic and is not a manual restart step.

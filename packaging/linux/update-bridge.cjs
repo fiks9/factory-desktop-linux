@@ -8,10 +8,18 @@ const HELPER_TIMEOUT_MS = 5000;
 const MAX_TEXT_LENGTH = 512;
 const STARTUP_SYNC_DELAYS_MS = Object.freeze([250, 1000, 3000, 7000, 15000]);
 const ACTIVE_POLL_INTERVAL_MS = 30000;
-const ACTIVE_UPDATE_STATES = new Set(["checking", "downloading", "building", "validating"]);
-const STARTUP_TERMINAL_STATES = new Set([
-  "ready-pending-exit",
+const ACTIVE_UPDATE_STATES = new Set([
+  "checking",
+  "downloading",
+  "building",
+  "validating",
   "installing",
+]);
+const USER_OPERATION_START_STATES = new Set(["update-available", "ready-to-install"]);
+const STARTUP_TERMINAL_STATES = new Set([
+  "idle",
+  "update-available",
+  "ready-to-install",
   "installed",
   "install-failed-manual-action",
   "rolled-back",
@@ -21,10 +29,11 @@ const STARTUP_TERMINAL_STATES = new Set([
 const LINUX_STATES = new Set([
   "idle",
   "checking",
+  "update-available",
   "downloading",
   "building",
   "validating",
-  "ready-pending-exit",
+  "ready-to-install",
   "installing",
   "installed",
   "install-failed-manual-action",
@@ -34,16 +43,19 @@ const LINUX_STATES = new Set([
 const COMPATIBILITY_KINDS = Object.freeze({
   idle: "idle",
   checking: "checking",
+  "update-available": "available",
   downloading: "downloading",
   building: "downloading",
   validating: "downloading",
-  "ready-pending-exit": "available",
+  "ready-to-install": "available",
   installing: "downloading",
   installed: "idle",
   "install-failed-manual-action": "error",
   "rolled-back": "idle",
   failed: "error",
 });
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 
 function strictFactoryVersion(value, name) {
   if (typeof value !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value)) {
@@ -64,6 +76,28 @@ function optionalString(value, name, maxLength = MAX_TEXT_LENGTH) {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string" || value.length > maxLength) {
     throw new Error(`invalid ${name}`);
+  }
+  return value;
+}
+
+function optionalTimestamp(value, name) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.length > 64 || !RFC3339.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new Error(`invalid ${name}`);
+  }
+  return value;
+}
+
+function optionalBoolean(value, name) {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== "boolean") throw new Error(`invalid ${name}`);
+  return value;
+}
+
+function optionalSha256(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error("invalid package hash");
   }
   return value;
 }
@@ -92,11 +126,15 @@ function parseStatus(output) {
     version: value.version === undefined || value.version === null
       ? undefined
       : strictFactoryVersion(value.version, "version"),
+    availableVersion: value.availableVersion === undefined || value.availableVersion === null
+      ? undefined
+      : strictFactoryVersion(value.availableVersion, "available version"),
+    updatedAt: optionalTimestamp(value.updatedAt, "updated timestamp"),
     packagePath: optionalString(value.packagePath, "package path", 4096),
-    packageSha256: optionalString(value.packageSha256, "package hash", 64),
+    packageSha256: optionalSha256(value.packageSha256),
     manualCommand: optionalString(value.manualCommand, "manual command", 4096),
-    installRequested: value.installRequested === true,
-    relaunchPending: value.relaunchPending === true,
+    installRequested: optionalBoolean(value.installRequested, "install requested"),
+    relaunchPending: optionalBoolean(value.relaunchPending, "relaunch pending"),
     relaunchError: sanitizeText(value.relaunchError),
     message: sanitizeText(value.message),
   });
@@ -169,23 +207,44 @@ function createBridge(overrides = {}) {
   let startupSyncPromise;
   let startupCheckRequested = false;
   let startupSyncScheduled = false;
+  let updateOperationRequested = false;
+  let relaunchArmed = false;
+  let exitRequested = false;
 
   function parentWindow() {
     return windows?.getFocusedWindow?.() || windows?.getAllWindows?.()[0];
   }
 
+  function transitionKey(state) {
+    return [
+      state.linuxState,
+      state.version || "",
+      state.availableVersion || "",
+      state.packageSha256 || "",
+      state.message || "",
+      state.manualCommand || "",
+      state.installRequested ? "1" : "0",
+      state.relaunchPending ? "1" : "0",
+    ].join(":");
+  }
+
   async function runStatus(args) {
-    if (!helperExists()) return unavailableState();
     try {
+      if (!helperExists()) return unavailableState();
       const state = parseStatus(await run(args));
-      if (state.kind === "available") {
+      if (state.linuxState === "update-available" || state.linuxState === "ready-to-install") {
+        const latestVersion = strictFactoryVersion(
+          state.availableVersion || state.version,
+          "latest Factory version",
+        );
         return Object.freeze({
           ...state,
           currentVersion: strictFactoryVersion(app?.getVersion?.(), "current Factory version"),
-          latestVersion: strictFactoryVersion(state.version, "latest Factory version"),
+          availableVersion: state.availableVersion || latestVersion,
+          latestVersion,
         });
       }
-      if (state.kind === "downloading" && state.version) {
+      if (ACTIVE_UPDATE_STATES.has(state.linuxState) && state.version) {
         return Object.freeze({ ...state, targetVersion: state.version });
       }
       return state;
@@ -201,9 +260,13 @@ function createBridge(overrides = {}) {
   async function checkNow() {
     if (!helperExists()) return unavailableState();
     const current = await getState();
-    if (ACTIVE_UPDATE_STATES.has(current.linuxState) || current.linuxState === "ready-pending-exit" || current.linuxState === "installing" ||
-        current.linuxState === "install-failed-manual-action" ||
-        current.linuxState === "update-manager-unavailable") {
+    if (
+      updateOperationRequested
+      || ACTIVE_UPDATE_STATES.has(current.linuxState)
+      || current.linuxState === "ready-to-install"
+      || current.linuxState === "install-failed-manual-action"
+      || current.linuxState === "update-manager-unavailable"
+    ) {
       return current;
     }
     try {
@@ -219,71 +282,99 @@ function createBridge(overrides = {}) {
     }
   }
 
+  async function showManualAction(current) {
+    const parent = parentWindow();
+    if (!parent || !dialog?.showMessageBox || !clipboard?.writeText || !current.manualCommand) return;
+    const answer = await dialog.showMessageBox(parent, {
+      type: "warning",
+      title: "Manual update action required",
+      message: current.message || "Factory Desktop could not request an authenticated install.",
+      detail: current.manualCommand,
+      buttons: ["Copy command", "Dismiss"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (answer.response === 0) clipboard.writeText(current.manualCommand);
+  }
+
   async function install() {
     const current = await getState();
-    const parent = parentWindow();
-    if (current.linuxState === "ready-pending-exit") {
-      if (!parent || !dialog?.showMessageBox || !app?.quit) return current;
-      const answer = await dialog.showMessageBox(parent, {
-        type: "question",
-        title: "Install Factory Desktop update",
-        message: "Factory Desktop will close, install the validated update, and restart.",
-        buttons: ["Install and restart", "Cancel"],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (answer.response !== 0) return current;
-      const prepared = await runStatus(["prepare-install", "--pid", String(pid)]);
-      if (prepared.linuxState === "ready-pending-exit" && prepared.installRequested) app.quit();
-      return prepared;
+    if (current.linuxState === "install-failed-manual-action") {
+      await showManualAction(current);
+      return current;
     }
-    if (current.linuxState === "install-failed-manual-action" && current.manualCommand) {
-      if (!parent || !dialog?.showMessageBox || !clipboard?.writeText) return current;
-      const answer = await dialog.showMessageBox(parent, {
-        type: "warning",
-        title: "Manual update action required",
-        message: current.message || "Factory Desktop could not request an authenticated install.",
-        detail: current.manualCommand,
-        buttons: ["Copy command", "Dismiss"],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (answer.response === 0) clipboard.writeText(current.manualCommand);
+    if (!USER_OPERATION_START_STATES.has(current.linuxState)) {
+      if (ACTIVE_UPDATE_STATES.has(current.linuxState)) queueStartupSync(0);
+      return current;
     }
-    return current;
+    if (current.installRequested || updateOperationRequested) {
+      queueStartupSync(0);
+      return current;
+    }
+    try {
+      spawn(["update", "--pid", String(pid)]);
+      updateOperationRequested = true;
+      relaunchArmed = true;
+      queueStartupSync(0);
+      return Object.freeze({
+        ...current,
+        kind: "downloading",
+        linuxState: "downloading",
+        message: "Preparing Factory Desktop update",
+      });
+    } catch (error) {
+      return failedState(error?.message);
+    }
   }
 
   async function pollOnce() {
     const current = await getState();
-    const transition = `${current.linuxState}:${current.version || ""}:${current.packageSha256 || ""}`;
-    if (transition === previousTransition) return current;
-    previousTransition = transition;
-    if (current.linuxState === "failed") {
-      const parent = parentWindow();
-      if (parent && dialog?.showMessageBox) {
-        const answer = await dialog.showMessageBox(parent, {
-          type: "error",
-          title: "Factory Desktop update rejected",
-          message: current.message || "The update candidate was rejected.",
-          buttons: ["Retry check", "Dismiss"],
-          defaultId: 1,
-          cancelId: 1,
-          noLink: true,
-        });
-        if (answer.response === 0) {
-          const retried = await checkNow();
-          if (!startupSyncTerminal(retried)) queueStartupSync(0);
-          return retried;
+    const transition = transitionKey(current);
+    if (transition !== previousTransition) {
+      previousTransition = transition;
+      if (current.linuxState === "failed" && !updateOperationRequested) {
+        const parent = parentWindow();
+        if (parent && dialog?.showMessageBox) {
+          const answer = await dialog.showMessageBox(parent, {
+            type: "error",
+            title: "Factory Desktop update rejected",
+            message: current.message || "The update candidate was rejected.",
+            buttons: ["Retry check", "Dismiss"],
+            defaultId: 1,
+            cancelId: 1,
+            noLink: true,
+          });
+          if (answer.response === 0) {
+            const retried = await checkNow();
+            if (!startupSyncTerminal(retried)) queueStartupSync(0);
+            return retried;
+          }
         }
+      }
+    }
+    if (relaunchArmed && !exitRequested && current.linuxState === "ready-to-install") {
+      exitRequested = true;
+      try {
+        app?.quit?.();
+      } catch {
+        // Electron may already be exiting after preparation completed.
       }
     }
     return current;
   }
 
   function startupSyncTerminal(state) {
-    if (state.linuxState === "idle" && startupCheckRequested) return true;
+    if (relaunchArmed && [
+      "update-available",
+      "checking",
+      "downloading",
+      "building",
+      "validating",
+      "ready-to-install",
+      "installing",
+    ].includes(state.linuxState)) return false;
+    if (state.linuxState === "idle" && startupCheckRequested && !relaunchArmed) return true;
     return STARTUP_TERMINAL_STATES.has(state.linuxState);
   }
 
@@ -301,11 +392,16 @@ function createBridge(overrides = {}) {
 
   async function startupSyncTick(index) {
     let current = await dispatch("getState", {});
-    if (current.linuxState === "idle" && !current.version && !startupCheckRequested) {
+    if (
+      current.linuxState === "idle"
+      && !current.version
+      && !current.availableVersion
+      && !startupCheckRequested
+    ) {
       startupCheckRequested = true;
       current = await dispatch("checkNow", {});
     }
-    if (ACTIVE_UPDATE_STATES.has(current.linuxState)) queueStartupSync(index + 1);
+    if (ACTIVE_UPDATE_STATES.has(current.linuxState) || (relaunchArmed && !startupSyncTerminal(current))) queueStartupSync(index + 1);
     return current;
   }
 
@@ -333,7 +429,9 @@ function createBridge(overrides = {}) {
     const state = action === "getState"
       ? await pollOnce()
       : await invoke(action, payload);
-    if (action === "checkNow" && !startupSyncTerminal(state)) queueStartupSync(0);
+    if ((action === "checkNow" || action === "install") && !startupSyncTerminal(state)) {
+      queueStartupSync(0);
+    }
     for (const window of windows?.getAllWindows?.() || []) {
       if (window?.isDestroyed?.()) continue;
       window?.webContents?.send?.("updates:state", state);

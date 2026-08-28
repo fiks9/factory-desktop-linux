@@ -18,7 +18,7 @@ pub fn cleanup(paths: &Paths, state: &StateRecord) -> io::Result<()> {
     if paths.workspaces_dir().exists() {
         let keep = matches!(
             state.state,
-            State::ReadyPendingExit | State::Installing | State::InstallFailedManualAction
+            State::ReadyToInstall | State::Installing | State::InstallFailedManualAction
         )
         .then_some(state.candidate_id.as_deref())
         .flatten();

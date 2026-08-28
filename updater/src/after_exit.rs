@@ -1,7 +1,6 @@
 use crate::locks::UpdateLock;
 use crate::paths::Paths;
 use crate::state::{State, StateStore};
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -10,14 +9,14 @@ pub struct AfterExitOptions {
     pub parent_pid: u32,
     pub timeout: Duration,
     pub poll_interval: Duration,
-    pub launcher: PathBuf,
+    pub launcher: std::path::PathBuf,
 }
 
 pub trait AfterExitBackend {
     fn factory_running(&self, parent_pid: u32) -> bool;
     fn wait(&self, duration: Duration);
     fn install_ready(&self) -> Result<State, Error>;
-    fn relaunch(&self, launcher: &Path) -> Result<(), Error>;
+    fn relaunch(&self, launcher: &std::path::Path) -> Result<(), Error>;
 }
 
 pub fn run_after_exit(
@@ -45,12 +44,9 @@ pub fn run_after_exit(
         state.state = outcome;
         state.install_requested = false;
         state.manual_action_required = outcome == State::InstallFailedManualAction;
-        if !matches!(outcome, State::Installed | State::RolledBack) {
-            state.relaunch_pending = false;
-        } else {
-            state.relaunch_pending = true;
-            state.relaunch_error = None;
-        }
+        state.relaunch_pending = matches!(outcome, State::Installed | State::RolledBack);
+        state.relaunch_error = None;
+        state.updated_at = chrono::Utc::now();
     })?;
     if !matches!(outcome, State::Installed | State::RolledBack) {
         return Ok(());

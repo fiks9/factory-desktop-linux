@@ -10,7 +10,7 @@ const { test } = require("node:test");
 const asar = require("@electron/asar");
 const { sha256File } = require("../src/asar-io");
 const { patchAsar } = require("../src/engine");
-const { validatePackaging } = require("../src/validators");
+const { validatePackaging, validateAutoUpdater, validateNativeUpdater } = require("../src/validators");
 
 async function fixture(content) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-patcher-"));
@@ -174,6 +174,7 @@ test("native updater patch loads the package bridge once and replaces all IPC ha
   await patchAsar({ asarPath });
   const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
   assert.equal((patched.match(/\/usr\/lib\/factory-desktop\/update-bridge\.cjs/g) || []).length, 1);
+  assert.match(patched, /require\("\/usr\/lib\/factory-desktop\/update-bridge\.cjs"\)\.createBridge\(\{electron:W\}\)/);
   assert.match(patched, /FACTORY_UPDATE_MANAGER_UNAVAILABLE/);
   assert.match(patched, /linuxState:"update-manager-unavailable"/);
   assert.match(patched, /factoryLinuxUpdateBridge\.startBackgroundSync\?\.\(\)/);
@@ -181,6 +182,33 @@ test("native updater patch loads the package bridge once and replaces all IPC ha
     assert.equal((patched.match(new RegExp(`\\.dispatch\\(\\"${action}\\"`, "g")) || []).length, 1, action);
   }
   assert.doesNotMatch(patched, /legacy(?:GetState|Install|CheckNow)/);
+});
+
+test("native updater validator rejects an extra updates IPC handler", async () => {
+  const { asarPath } = await fixture(rawBundle());
+  await patchAsar({ asarPath });
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+  const validation = validateNativeUpdater([{ path: ".vite/build/index.js", content: `${patched}W.ipcMain.handle("updates:debug",()=>null);` }]);
+  assert.equal(validation.validationPassed, false);
+  assert.equal(validation.evidence.updateHandlerCount, 4);
+});
+
+test("autoUpdater validator does not accept a distant platform expression as a guard", () => {
+  const validation = validateAutoUpdater([{ path: "index.js", content: "/* factory-linux:auto-updater-guard */process.platform!==\"linux\";W.autoUpdater.checkForUpdates();" }]);
+  assert.equal(validation.validationPassed, false);
+  assert.equal(validation.evidence.unguarded, 1);
+});
+
+test("synthetic bundle follows the updater contract and remains parseable after patching", async () => {
+  const { syntheticBundle } = require("../../scripts/create-synthetic-dmg");
+  const source = syntheticBundle();
+  assert.doesNotThrow(() => new vm.Script(source, { filename: "synthetic-index.js" }));
+  const { asarPath } = await fixture(source);
+  const report = await patchAsar({ asarPath });
+  const outcome = report.outcomes.find((item) => item.id === "linux-native-updater-button");
+  assert.equal(outcome.validationPassed, true);
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+  assert.doesNotThrow(() => new vm.Script(patched, { filename: "patched-synthetic-index.js" }));
 });
 
 test("native updater patch remains valid inside a comma-expression", async () => {

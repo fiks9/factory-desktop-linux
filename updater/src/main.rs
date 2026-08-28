@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use factory_update_manager::after_exit::{run_after_exit, AfterExitBackend, AfterExitOptions};
 use factory_update_manager::approval::{
     load_approval_request, write_approval_request, ApprovalRequest, ApprovalStore,
     NodeApprovalInspector,
@@ -28,7 +27,6 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::thread;
 use std::time::Duration;
-
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Parser)]
@@ -50,37 +48,19 @@ struct Cli {
 enum Commands {
     CheckNow {
         #[arg(long)]
-        dmg: Option<PathBuf>,
-        #[arg(long)]
         version: Option<String>,
         #[arg(long, value_enum)]
         format: Option<FormatArg>,
     },
-    Rebuild {
+    Update {
         #[arg(long)]
-        dmg: PathBuf,
-        #[arg(long)]
-        version: String,
-        #[arg(long, value_enum)]
-        format: Option<FormatArg>,
+        pid: u32,
     },
     Status {
         #[arg(long)]
         json: bool,
     },
     Diagnose,
-    InstallReady,
-    PrepareInstall {
-        #[arg(long)]
-        pid: u32,
-        #[arg(long, hide = true)]
-        no_spawn: bool,
-    },
-    #[command(hide = true)]
-    AfterExit {
-        #[arg(long)]
-        pid: u32,
-    },
     ReconcileInstall,
     DiscardCandidate,
     SetupUnattended {
@@ -141,25 +121,14 @@ fn run(cli: Cli) -> Result<(), Error> {
         node: cli.node,
     };
     match cli.command {
-        Commands::CheckNow {
-            dmg,
-            version,
-            format,
-        } => check_now(&context, dmg, version, format.map(Into::into)),
-        Commands::Rebuild {
-            dmg,
-            version,
-            format,
-        } => check_now(&context, Some(dmg), Some(version), format.map(Into::into)),
+        Commands::CheckNow { version, format } => check_now(version, format.map(Into::into)),
+        Commands::Update { pid } => update(&context, pid),
         Commands::Status { json: _ } => {
             with_user_state(|_, store, state| print_json(&status_view(store, &state)))
         }
         Commands::Diagnose => {
             with_user_state(|paths, _, state| print_json(&diagnose(paths, &state)))
         }
-        Commands::InstallReady => install_ready(&context),
-        Commands::PrepareInstall { pid, no_spawn } => prepare_install(pid, no_spawn),
-        Commands::AfterExit { pid } => after_exit(&context, pid),
         Commands::ReconcileInstall => reconcile_install(),
         Commands::DiscardCandidate => discard_candidate(),
         Commands::SetupUnattended {
@@ -195,36 +164,48 @@ fn setup_unattended(acknowledged: bool) -> Result<(), Error> {
     }))
 }
 
-fn prepare_install(parent_pid: u32, no_spawn: bool) -> Result<(), Error> {
-    with_locked_user_state(|_, store, mut state| {
-        if state.state != State::ReadyPendingExit {
-            return Err("no validated update is ready for after-exit installation".into());
+fn update(context: &Context, parent_pid: u32) -> Result<(), Error> {
+    if parent_pid == 0 {
+        return Err("--pid must identify the Factory Desktop process".into());
+    }
+    with_locked_user_state(|paths, store, mut state| {
+        if state.install_requested
+            || matches!(
+                state.state,
+                State::Checking
+                    | State::Downloading
+                    | State::Building
+                    | State::Validating
+                    | State::Installing
+            )
+        {
+            return Err("an update operation is already active".into());
         }
-        if state.install_requested {
-            return Err("an after-exit installation request already exists".into());
+        if state.state == State::UpdateAvailable {
+            prepare_candidate(context, paths, store, &mut state)?;
         }
-        state.install_requested = true;
-        state.relaunch_error = None;
-        state.updated_at = chrono::Utc::now();
-        store.save(&state)?;
-        if !no_spawn {
-            if let Err(error) = spawn_after_exit(parent_pid) {
-                state.install_requested = false;
-                state.relaunch_error = Some(format!("could not start after-exit helper: {error}"));
-                store.save(&state)?;
-                return Err(error);
-            }
+        if state.state != State::ReadyToInstall {
+            return Err("no update is available; run a metadata check first".into());
         }
-        print_json(&status_view(store, &state))
-    })
+        request_install(store, &mut state)
+    })?;
+    wait_for_factory_exit(parent_pid)?;
+    install_ready(context)?;
+    relaunch_verified_install()
 }
 
-fn spawn_after_exit(parent_pid: u32) -> Result<(), Error> {
-    let mut command = Command::new(current_exe()?);
+fn relaunch_verified_install() -> Result<(), Error> {
+    let paths = Paths::resolve(None)?;
+    paths.ensure_all()?;
+    let store = StateStore::new(paths.state_file());
+    let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
+    let mut state = store.load()?;
+    if !matches!(state.state, State::Installed | State::RolledBack) {
+        return Ok(());
+    }
+    let launcher = Path::new("/opt/Factory/factory-desktop-launcher");
+    let mut command = Command::new(launcher);
     command
-        .arg("after-exit")
-        .arg("--pid")
-        .arg(parent_pid.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -236,87 +217,64 @@ fn spawn_after_exit(parent_pid: u32) -> Result<(), Error> {
             Ok(())
         });
     }
-    command.spawn()?;
+    match command.spawn() {
+        Ok(_) => {
+            state.relaunch_pending = false;
+            state.relaunch_error = None;
+            store.save(&state)?;
+            Ok(())
+        }
+        Err(error) => {
+            state.relaunch_pending = false;
+            state.relaunch_error = Some(format!(
+                "update installed but Factory Desktop could not relaunch: {error}"
+            ));
+            store.save(&state)?;
+            Err(error.into())
+        }
+    }
+}
+fn request_install(store: &StateStore, state: &mut StateRecord) -> Result<(), Error> {
+    if state.install_requested {
+        return Err("an installation request already exists".into());
+    }
+    state.install_requested = true;
+    state.relaunch_pending = false;
+    state.relaunch_error = None;
+    state.updated_at = chrono::Utc::now();
+    store.save(state)?;
+    print_json(&status_view(store, state))
+}
+
+fn wait_for_factory_exit(parent_pid: u32) -> Result<(), Error> {
+    let proc_root = if cfg!(debug_assertions) {
+        std::env::var_os("FACTORY_TEST_PROC_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/proc"))
+    } else {
+        PathBuf::from("/proc")
+    };
+    let parent = proc_root.join(parent_pid.to_string());
+    let timeout = Duration::from_secs(120);
+    let poll_interval = Duration::from_millis(500);
+    let mut elapsed = Duration::ZERO;
+    while parent.exists() || app_is_running() {
+        if elapsed >= timeout {
+            return fail_active_operation("timed out waiting for Factory Desktop to exit");
+        }
+        thread::sleep(poll_interval);
+        elapsed = elapsed.saturating_add(poll_interval);
+    }
     Ok(())
 }
 
-struct NativeAfterExitBackend<'a> {
-    context: &'a Context,
-    store: &'a StateStore,
-}
-
-impl AfterExitBackend for NativeAfterExitBackend<'_> {
-    fn factory_running(&self, parent_pid: u32) -> bool {
-        Path::new("/proc").join(parent_pid.to_string()).exists() || app_is_running()
-    }
-
-    fn wait(&self, duration: Duration) {
-        thread::sleep(duration);
-    }
-
-    fn install_ready(&self) -> Result<State, factory_update_manager::after_exit::Error> {
-        install_ready(self.context)?;
-        Ok(self.store.load()?.state)
-    }
-
-    fn relaunch(&self, launcher: &Path) -> Result<(), factory_update_manager::after_exit::Error> {
-        if launcher != Path::new("/opt/Factory/factory-desktop-launcher") {
-            return Err("refusing to relaunch an unexpected executable".into());
-        }
-        let mut command = Command::new(launcher);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        command.spawn()?;
-        Ok(())
-    }
-}
-
-fn after_exit(context: &Context, parent_pid: u32) -> Result<(), Error> {
-    let paths = Paths::resolve(None)?;
-    paths.ensure_all()?;
-    let store = StateStore::new(paths.state_file());
-    let backend = NativeAfterExitBackend {
-        context,
-        store: &store,
-    };
-    let result = run_after_exit(
-        &paths,
-        &store,
-        &AfterExitOptions {
-            parent_pid,
-            timeout: Duration::from_secs(120),
-            poll_interval: Duration::from_millis(500),
-            launcher: PathBuf::from("/opt/Factory/factory-desktop-launcher"),
-        },
-        &backend,
-    );
-    if result.is_err() {
-        let _state_lock = UpdateLock::acquire(&paths.state_lock_file())?;
-        let mut state = store.load()?;
-        if matches!(state.state, State::Installed | State::RolledBack)
-            && state.relaunch_error.is_some()
-        {
-            notify_once(
-                &store,
-                &mut state,
-                NotificationEvent::RelaunchFailed,
-                "Factory Desktop could not restart",
-                "The update is verified. Start Factory Desktop manually and review updater status.",
-                &DesktopNotifications,
-            )?;
-        }
-    }
-    result
+fn fail_active_operation(message: &str) -> Result<(), Error> {
+    with_locked_user_state(|_, store, mut state| {
+        state.install_requested = false;
+        state.relaunch_pending = false;
+        transition(store, &mut state, State::Failed, message)?;
+        Err(message.into())
+    })
 }
 
 fn reconcile_install() -> Result<(), Error> {
@@ -358,7 +316,12 @@ fn with_user_state<T>(
     let paths = Paths::resolve(None)?;
     paths.ensure_all()?;
     let store = StateStore::new(paths.state_file());
-    operation(&paths, &store, store.load()?)
+    let mut state = store.load()?;
+    if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+        let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
+        store.save(&state)?;
+    }
+    operation(&paths, &store, state)
 }
 
 fn with_locked_user_state<T>(
@@ -368,32 +331,26 @@ fn with_locked_user_state<T>(
     paths.ensure_all()?;
     let store = StateStore::new(paths.state_file());
     let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
-    let state = store.load()?;
+    let mut state = store.load()?;
+    if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+        store.save(&state)?;
+    }
     operation(&paths, &store, state)
 }
-
 fn check_now(
-    context: &Context,
-    pinned_dmg: Option<PathBuf>,
     supplied_version: Option<String>,
     supplied_format: Option<PackageFormat>,
 ) -> Result<(), Error> {
-    with_locked_user_state(|paths, store, mut state| {
+    with_locked_user_state(|_, store, mut state| {
         if blocks_new_candidate(state.state) {
-            return print_json(&state);
+            return print_json(&status_view(store, &state));
         }
-        cleanup(paths, &state)?;
-        state.candidate_id = None;
-        state.version = None;
-        state.package_path = None;
-        state.package_sha256 = None;
-        state.candidate_manifest = None;
         let result = (|| -> Result<(), Error> {
             transition(
                 store,
                 &mut state,
                 State::Checking,
-                "checking Factory Desktop upstream",
+                "checking Factory Desktop upstream metadata",
             )?;
             let manager = selected_manager(supplied_format)?;
             let version = match supplied_version {
@@ -403,125 +360,184 @@ fn check_now(
                     runtime()?.block_on(upstream.latest_version())?
                 }
             };
-            if pinned_dmg.is_none()
-                && manager.installed_factory_version()?.as_deref() == Some(version.as_str())
-            {
+            let installed = manager
+                .installed_factory_version()?
+                .ok_or("Factory Desktop is not installed through a supported package manager")?;
+            if !is_newer_version(&version, &installed)? {
+                clear_candidate_fields(&mut state);
+                state.available_version = None;
                 transition(
                     store,
                     &mut state,
                     State::Idle,
                     "already running the latest supported version",
                 )?;
-                return print_json(&state);
+            } else {
+                clear_candidate_fields(&mut state);
+                state.available_version = Some(version);
+                transition(
+                    store,
+                    &mut state,
+                    State::UpdateAvailable,
+                    "a newer Factory Desktop version is available",
+                )?;
             }
-            transition(
-                store,
-                &mut state,
-                State::Downloading,
-                "acquiring immutable DMG candidate",
-            )?;
-            let cache = DmgCache::new(paths.downloads_dir());
-            let official_candidate = pinned_dmg.is_none();
-            let dmg = match pinned_dmg {
-                Some(path) => cache.cache_pinned(&path)?,
-                None => {
-                    if let Some(cached) = cache.lookup_accepted_version(&version)? {
-                        cached
-                    } else {
-                        let upstream = UpstreamClient::official()?;
-                        let url = build_exact_download_url(&version, "x64")?;
-                        let client = upstream.download_client(&version, "x64")?;
-                        runtime()?.block_on(factory_update_manager::download::download_official(
-                            &client, &url, &version, &cache,
-                        ))?
-                    }
-                }
-            };
-            let candidate_id = candidate_id_for_digest(&dmg.sha256)?;
-            let workspace = paths.workspaces_dir().join(&candidate_id);
-            if workspace.exists() {
-                fs::remove_dir_all(&workspace)?;
-            }
-            transition(
-                store,
-                &mut state,
-                State::Building,
-                "running fail-closed Node build pipeline",
-            )?;
-            let root = builder_root(context)?;
-            let environment: Vec<(OsString, OsString)> = vec![
-                (
-                    "FACTORY_UPDATE_MANAGER_BINARY".into(),
-                    current_exe()?.into_os_string(),
-                ),
-                (
-                    "FACTORY_UPDATE_BUILDER_ROOT".into(),
-                    root.clone().into_os_string(),
-                ),
-            ];
-            let candidate = NodeBuilder::new(root, context.node.clone()).build(BuildRequest {
-                candidate_id: candidate_id.clone(),
-                version: version.clone(),
-                dmg_path: dmg.path,
-                workspace,
-                downloads: paths.downloads_dir(),
-                format: manager.format(),
-                environment,
-            })?;
-            if official_candidate {
-                cache.record_accepted_version(&version, &dmg.sha256)?;
-            }
-            transition(
-                store,
-                &mut state,
-                State::Validating,
-                "package inspector accepted candidate",
-            )?;
-            if read_unattended(&paths.config_dir.join("config.toml"))? {
-                let request = ApprovalRequest::from_candidate(&candidate)?;
-                let request_path = candidate
-                    .manifest_path
-                    .parent()
-                    .ok_or("candidate manifest has no workspace")?
-                    .join("approval-request.json");
-                write_approval_request(&request_path, &request)?;
-            }
-            state.candidate_id = Some(candidate_id);
-            state.version = Some(candidate.version);
-            state.package_path = Some(candidate.package_path);
-            state.package_sha256 = Some(candidate.package_sha256);
-            state.candidate_manifest = Some(candidate.manifest_path);
-            transition(
-                store,
-                &mut state,
-                State::ReadyPendingExit,
-                "validated update is ready; install only after Factory Desktop exits",
-            )?;
-            notify_once(
-                store,
-                &mut state,
-                NotificationEvent::Ready,
-                "Factory Desktop update ready",
-                "Restart Factory Desktop to install the validated update.",
-                &DesktopNotifications,
-            )?;
-            print_json(&state)
+            print_json(&status_view(store, &state))
         })();
         if let Err(error) = &result {
-            let message = format!("candidate rejected: {error}");
-            transition(store, &mut state, State::Failed, &message)?;
-            cleanup(paths, &state)?;
-            notify_once(
+            transition(
                 store,
                 &mut state,
-                NotificationEvent::Rejected,
-                "Factory Desktop update rejected",
-                &message,
-                &DesktopNotifications,
+                State::Failed,
+                &format!("metadata check failed: {error}"),
             )?;
         }
         result
     })
+}
+
+fn is_newer_version(candidate: &str, installed: &str) -> Result<bool, Error> {
+    fn components(value: &str) -> Result<[u64; 3], Error> {
+        let normalized = factory_update_manager::upstream::parse_version(value)?;
+        let core = normalized.split(['-', '+']).next().unwrap_or_default();
+        let mut result = [0_u64; 3];
+        for (index, part) in core.split('.').enumerate() {
+            result[index] = part.parse()?;
+        }
+        Ok(result)
+    }
+    Ok(components(candidate)? > components(installed)?)
+}
+
+fn clear_candidate_fields(state: &mut StateRecord) {
+    state.candidate_id = None;
+    state.version = None;
+    state.package_path = None;
+    state.package_sha256 = None;
+    state.candidate_manifest = None;
+    state.install_requested = false;
+    state.manual_action_required = false;
+    state.manual_command = None;
+    state.approval_id = None;
+    state.approval_expires_at = None;
+    state.relaunch_pending = false;
+    state.relaunch_error = None;
+}
+
+fn prepare_candidate(
+    context: &Context,
+    paths: &Paths,
+    store: &StateStore,
+    state: &mut StateRecord,
+) -> Result<(), Error> {
+    let version = state
+        .available_version
+        .clone()
+        .ok_or("update metadata is missing the available version")?;
+    clear_candidate_fields(state);
+    let result = (|| -> Result<(), Error> {
+        cleanup(paths, state)?;
+        let manager = selected_manager(None)?;
+        transition(
+            store,
+            state,
+            State::Downloading,
+            "acquiring immutable DMG candidate",
+        )?;
+        let cache = DmgCache::new(paths.downloads_dir());
+        let dmg = if let Some(cached) = cache.lookup_accepted_version(&version)? {
+            cached
+        } else {
+            let upstream = UpstreamClient::official()?;
+            let url = build_exact_download_url(&version, "x64")?;
+            let client = upstream.download_client(&version, "x64")?;
+            runtime()?.block_on(factory_update_manager::download::download_official(
+                &client, &url, &version, &cache,
+            ))?
+        };
+        let candidate_id = candidate_id_for_digest(&dmg.sha256)?;
+        let workspace = paths.workspaces_dir().join(&candidate_id);
+        if workspace.exists() {
+            fs::remove_dir_all(&workspace)?;
+        }
+        transition(
+            store,
+            state,
+            State::Building,
+            "running fail-closed Node build pipeline",
+        )?;
+        let root = builder_root(context)?;
+        let environment: Vec<(OsString, OsString)> = vec![
+            (
+                "FACTORY_UPDATE_MANAGER_BINARY".into(),
+                current_exe()?.into_os_string(),
+            ),
+            (
+                "FACTORY_UPDATE_BUILDER_ROOT".into(),
+                root.clone().into_os_string(),
+            ),
+        ];
+        let candidate = NodeBuilder::new(root, context.node.clone()).build(BuildRequest {
+            candidate_id: candidate_id.clone(),
+            version: version.clone(),
+            dmg_path: dmg.path,
+            workspace,
+            downloads: paths.downloads_dir(),
+            format: manager.format(),
+            environment,
+        })?;
+        cache.record_accepted_version(&version, &dmg.sha256)?;
+        transition(
+            store,
+            state,
+            State::Validating,
+            "package inspector accepted candidate",
+        )?;
+        if read_unattended(&paths.config_dir.join("config.toml"))? {
+            let request = ApprovalRequest::from_candidate(&candidate)?;
+            let request_path = candidate
+                .manifest_path
+                .parent()
+                .ok_or("candidate manifest has no workspace")?
+                .join("approval-request.json");
+            write_approval_request(&request_path, &request)?;
+        }
+        state.available_version = None;
+        state.candidate_id = Some(candidate_id);
+        state.version = Some(candidate.version);
+        state.package_path = Some(candidate.package_path);
+        state.package_sha256 = Some(candidate.package_sha256);
+        state.candidate_manifest = Some(candidate.manifest_path);
+        transition(
+            store,
+            state,
+            State::ReadyToInstall,
+            "validated update is ready for authenticated installation",
+        )?;
+        notify_once(
+            store,
+            state,
+            NotificationEvent::Ready,
+            "Factory Desktop update ready",
+            "Factory Desktop will install the validated update after it exits.",
+            &DesktopNotifications,
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        let message = format!("candidate rejected: {error}");
+        transition(store, state, State::Failed, &message)?;
+        cleanup(paths, state)?;
+        notify_once(
+            store,
+            state,
+            NotificationEvent::Rejected,
+            "Factory Desktop update rejected",
+            &message,
+            &DesktopNotifications,
+        )?;
+    }
+    result
 }
 
 fn discard_candidate() -> Result<(), Error> {
@@ -575,14 +591,14 @@ fn transition(
 
 fn install_ready(_context: &Context) -> Result<(), Error> {
     with_locked_user_state(|paths, store, mut state| {
-        if state.state != State::ReadyPendingExit {
-            return Err("no validated update is waiting for application exit".into());
+        if state.state != State::ReadyToInstall {
+            return Err("no validated update is waiting for installation".into());
         }
         if app_is_running() {
             state.message =
                 Some("Factory Desktop is still running; installation remains pending exit".into());
             store.save(&state)?;
-            return print_json(&state);
+            return print_json(&status_view(store, &state));
         }
         let manifest = state
             .candidate_manifest
@@ -680,7 +696,15 @@ fn install_ready(_context: &Context) -> Result<(), Error> {
                 )?;
             }
         }
-        print_json(&state)
+        let terminal = matches!(state.state, State::Installed | State::RolledBack);
+        state.install_requested = false;
+        state.relaunch_pending = false;
+        state.updated_at = chrono::Utc::now();
+        store.save(&state)?;
+        if terminal {
+            cleanup(paths, &state)?;
+        }
+        print_json(&status_view(store, &state))
     })
 }
 
@@ -794,12 +818,14 @@ fn recover_interrupted_install(paths: &Paths) -> Result<StateRecord, Error> {
             State::InstallFailedManualAction,
             "interrupted privileged installation requires explicit user action",
         )?;
+    } else if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+        store.save(&state)?;
     }
     cleanup(paths, &state)?;
     Ok(state)
 }
 
-fn run_daemon(context: &Context, once: bool) -> Result<(), Error> {
+fn run_daemon(_context: &Context, once: bool) -> Result<(), Error> {
     let paths = Paths::resolve(None)?;
     paths.ensure_all()?;
     let _daemon_lock = UpdateLock::acquire(&paths.daemon_lock_file())?;
@@ -808,7 +834,7 @@ fn run_daemon(context: &Context, once: bool) -> Result<(), Error> {
 
     loop {
         if !blocks_new_candidate(state.state) {
-            if let Err(error) = check_now(context, None, None, None) {
+            if let Err(error) = check_now(None, None) {
                 eprintln!("factory-update-manager daemon check failed: {error}");
             }
         }
@@ -878,10 +904,10 @@ fn status_view(store: &StateStore, state: &StateRecord) -> serde_json::Value {
     let kind = match state.state {
         State::Idle | State::Installed | State::RolledBack => "idle",
         State::Checking => "checking",
+        State::UpdateAvailable | State::ReadyToInstall => "available",
         State::Downloading | State::Building | State::Validating | State::Installing => {
             "downloading"
         }
-        State::ReadyPendingExit => "available",
         State::InstallFailedManualAction | State::Failed => "error",
     };
     serde_json::json!({
@@ -889,6 +915,8 @@ fn status_view(store: &StateStore, state: &StateRecord) -> serde_json::Value {
         "kind": kind,
         "linuxState": linux_state,
         "message": state.message.as_deref().map(|value| sanitize_text(value, 512)),
+        "updatedAt": state.updated_at,
+        "availableVersion": (state.state == State::UpdateAvailable).then(|| state.available_version.clone()).flatten(),
         "manualCommand": state.manual_command.as_deref().map(|value| sanitize_text(value, 4096)),
         "version": state.version,
         "packagePath": state.package_path,

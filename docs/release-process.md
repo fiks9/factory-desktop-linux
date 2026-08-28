@@ -23,6 +23,24 @@ checks version/hash/structure, patches the raw ASAR, validates required
 outcomes, builds all formats, extracts and inspects them, then verifies
 provenance and checksums.
 
+## Updater Release Acceptance
+
+Native `.deb` and `.rpm` release candidates must carry the fixed update bridge,
+updater binary, polkit policy, and user service. AppImage must remain free of
+the native helper and report `update-manager-unavailable`.
+
+Release validation must distinguish metadata discovery from preparation:
+startup, daemon checks, and `check-now` query upstream metadata only. The
+visible Update action must be the path that invokes `update --pid PID` and
+exercises `downloading`, `building`, `validating`, and `ready-to-install`.
+Polkit authentication must occur only after preparation. A verified install or
+known-good rollback must trigger one controlled automatic relaunch; the test
+must not require a user to restart Factory manually. The restart remains an
+intentional process boundary for loading new Electron code, not a second user
+action. Validate the stable external `schemaVersion: 1` status envelope and
+the documented Linux states without weakening package hashes, re-inspection,
+fixed helper paths, or package-manager version verification.
+
 Factory and wrapper identities are deliberately separate. For the corrected
 Factory `0.139.0` wrapper, use `factory_version=0.139.0` and
 `wrapper_revision=linux.1`. This produces tag `v0.139.0-linux.1`, deb version
