@@ -70,7 +70,13 @@ function validateNativeUpdater(files) {
     (all.match(new RegExp(`ipcMain\\.handle\\((['"])updates:${action}\\1,\\(\\)=>factoryLinuxUpdateBridge\\.dispatch\\("${action}",\\{\\}\\)\\)`, "g")) || []).length,
   ]));
   const updateHandlers = [...all.matchAll(/ipcMain\.handle\((['"])updates:([A-Za-z]+)\1\s*,/g)];
-  const oldHandlers = updateHandlers.some((match) => !["getState", "install", "checkNow"].includes(match[2]) || !all.slice(match.index, match.index + 180).includes("factoryLinuxUpdateBridge.dispatch"));
+  const allowedHandlers = new Set(["getState", "install", "checkNow", "getDiagnostics"]);
+  const oldHandlers = updateHandlers.some((match) => {
+    if (match[2] === "getDiagnostics") return false;
+    return !["getState", "install", "checkNow"].includes(match[2])
+      || !all.slice(match.index, match.index + 180).includes("factoryLinuxUpdateBridge.dispatch");
+  });
+  const unexpectedHandlers = updateHandlers.some((match) => !allowedHandlers.has(match[2]));
   const appImageFallback = all.includes('FACTORY_UPDATE_MANAGER_UNAVAILABLE==="1"')
     && all.includes('linuxState:"update-manager-unavailable"')
     && /dispatch:async\(\)=>\{/.test(all);
@@ -82,8 +88,9 @@ function validateNativeUpdater(files) {
     && bridgeFactory
     && Object.values(handlers).every((count) => count === 1)
     && handlerCount === 3
-    && updateHandlers.length === 3
+    && (updateHandlers.length === 3 || updateHandlers.length === 4)
     && !oldHandlers
+    && !unexpectedHandlers
     && appImageFallback
     && expressionIife
     && !all.includes("FACTORY_UPDATE_MANAGER_PATH");
