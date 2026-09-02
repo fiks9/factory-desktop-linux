@@ -207,6 +207,9 @@ fn relaunch_verified_install() -> Result<(), Error> {
         return Ok(());
     }
     let launcher = Path::new("/opt/Factory/factory-desktop-launcher");
+    if state.state == State::ReadyToInstall && !launcher.is_file() {
+        return Ok(());
+    }
     let mut command = Command::new(launcher);
     command
         .stdin(Stdio::null())
