@@ -210,6 +210,7 @@ function createBridge(overrides = {}) {
   let updateOperationRequested = false;
   let relaunchArmed = false;
   let exitRequested = false;
+  let startupSyncActive = false;
 
   function parentWindow() {
     return windows?.getFocusedWindow?.() || windows?.getAllWindows?.()[0];
@@ -333,7 +334,7 @@ function createBridge(overrides = {}) {
     const transition = transitionKey(current);
     if (transition !== previousTransition) {
       previousTransition = transition;
-      if (current.linuxState === "failed" && !updateOperationRequested) {
+      if (current.linuxState === "failed" && !updateOperationRequested && !startupSyncActive) {
         const parent = parentWindow();
         if (parent && dialog?.showMessageBox) {
           const answer = await dialog.showMessageBox(parent, {
@@ -391,18 +392,35 @@ function createBridge(overrides = {}) {
   }
 
   async function startupSyncTick(index) {
-    let current = await dispatch("getState", {});
-    if (
-      current.linuxState === "idle"
-      && !current.version
-      && !current.availableVersion
-      && !startupCheckRequested
-    ) {
-      startupCheckRequested = true;
-      current = await dispatch("checkNow", {});
+    startupSyncActive = true;
+    try {
+      let current = await dispatch("getState", {});
+      if (current.linuxState === "failed") {
+        if (index <= STARTUP_SYNC_DELAYS_MS.length) {
+          startupCheckRequested = false;
+          current = await dispatch("checkNow", {});
+        }
+      } else if (
+        current.linuxState === "idle"
+        && !current.version
+        && !current.availableVersion
+        && !startupCheckRequested
+      ) {
+        startupCheckRequested = true;
+        current = await dispatch("checkNow", {});
+      }
+      if (current.linuxState === "failed" && index <= STARTUP_SYNC_DELAYS_MS.length) {
+        queueStartupSync(index + 1);
+      } else if (
+        ACTIVE_UPDATE_STATES.has(current.linuxState)
+        || (relaunchArmed && !startupSyncTerminal(current))
+      ) {
+        queueStartupSync(index + 1);
+      }
+      return current;
+    } finally {
+      startupSyncActive = false;
     }
-    if (ACTIVE_UPDATE_STATES.has(current.linuxState) || (relaunchArmed && !startupSyncTerminal(current))) queueStartupSync(index + 1);
-    return current;
   }
 
   function startBackgroundSync() {

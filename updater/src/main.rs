@@ -14,7 +14,7 @@ use factory_update_manager::notify::{notify_once, DesktopNotifications, Notifica
 use factory_update_manager::package_manager::{NativePackageManager, PackageManager};
 use factory_update_manager::paths::Paths;
 use factory_update_manager::polkit::{
-    read_unattended, request_polkit_install, write_unattended_opt_in, Action,
+    read_unattended, request_polkit_install, write_unattended_opt_in, Action, InstallRequestError,
 };
 use factory_update_manager::rollback::KnownGoodStore;
 use factory_update_manager::state::{State, StateRecord, StateStore};
@@ -200,7 +200,10 @@ fn relaunch_verified_install() -> Result<(), Error> {
     let store = StateStore::new(paths.state_file());
     let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
     let mut state = store.load()?;
-    if !matches!(state.state, State::Installed | State::RolledBack) {
+    if !matches!(
+        state.state,
+        State::Installed | State::RolledBack | State::ReadyToInstall
+    ) {
         return Ok(());
     }
     let launcher = Path::new("/opt/Factory/factory-desktop-launcher");
@@ -673,25 +676,40 @@ fn install_ready(_context: &Context) -> Result<(), Error> {
                     )?;
                 }
             },
-            Err(_) => {
-                state.manual_command = Some(format!(
-                    "sudo {} {} {}",
-                    current_exe()?.display(),
-                    action.command(),
-                    manifest.display()
-                ));
-                transition(
-                    store,
-                    &mut state,
-                    State::InstallFailedManualAction,
-                    "polkit was unavailable or denied; copy the validated manual command",
-                )?;
+            Err(error) => {
+                let message = match error {
+                    InstallRequestError::AuthorizationDenied => {
+                        state.install_requested = false;
+                        transition(
+                            store,
+                            &mut state,
+                            State::ReadyToInstall,
+                            "authentication was cancelled; the validated update remains ready",
+                        )?;
+                        "authentication was cancelled; retry Update to install the validated update"
+                    }
+                    other => {
+                        state.manual_command = Some(format!(
+                            "sudo {} {} {}",
+                            current_exe()?.display(),
+                            action.command(),
+                            manifest.display()
+                        ));
+                        transition(
+                            store,
+                            &mut state,
+                            State::InstallFailedManualAction,
+                            &format!("privileged installation failed: {other}"),
+                        )?;
+                        "privileged installation failed; manual action is required"
+                    }
+                };
                 notify_once(
                     store,
                     &mut state,
                     NotificationEvent::ManualAction,
-                    "Factory Desktop update needs manual action",
-                    "Open Factory Desktop updates to copy the validated command.",
+                    "Factory Desktop update needs authentication",
+                    message,
                     &DesktopNotifications,
                 )?;
             }

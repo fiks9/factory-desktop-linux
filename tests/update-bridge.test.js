@@ -310,6 +310,41 @@ test("startup sync checks metadata once and publishes update-available without p
   assert.equal(spawns.some((args) => args[0] === "update"), false);
 });
 
+test("startup sync retries a transient metadata failure without showing an error dialog", async () => {
+  const scheduled = [];
+  const spawns = [];
+  let statusCalls = 0;
+  let dialogs = 0;
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => {
+      statusCalls += 1;
+      return statusCalls < 3
+        ? envelope("failed", { message: "metadata check failed: network unavailable" })
+        : envelope("update-available", { availableVersion: "0.143.0" });
+    },
+    spawn: (args) => spawns.push(args),
+    dialog: { showMessageBox: async () => { dialogs += 1; return { response: 1 }; } },
+    windows: { getFocusedWindow: () => ({ id: 1 }), getAllWindows: () => [] },
+    app: { getVersion: () => "0.142.0" },
+    schedule: (callback, delay) => scheduled.push({ callback, delay }),
+  });
+
+  const first = await bridge.startBackgroundSync();
+
+  assert.equal(first.linuxState, "checking");
+  assert.deepEqual(spawns, [["check-now"]]);
+  assert.equal(dialogs, 0);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 250);
+
+  await scheduled.shift().callback();
+
+  assert.equal(statusCalls, 3);
+  assert.equal(dialogs, 0);
+  assert.equal(spawns.length, 1);
+});
+
 test("long-running active updates continue with bounded helper polls", async () => {
   const scheduled = [];
   let calls = 0;

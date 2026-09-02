@@ -211,6 +211,50 @@ fn polkit_failure_retains_manual_action_candidate_through_cleanup() {
 }
 
 #[test]
+fn cancelled_polkit_authentication_keeps_validated_candidate_ready_to_retry() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("home")).unwrap();
+    let paths = test_paths(root.path());
+    paths.ensure_all().unwrap();
+    let (manifest, package) = candidate(&paths, "candidate-140", "0.140.0");
+    let store = StateStore::new(paths.state_file());
+    store
+        .save(&StateRecord {
+            state: State::ReadyToInstall,
+            candidate_id: Some("candidate-140".into()),
+            version: Some("0.140.0".into()),
+            package_path: Some(package.clone()),
+            package_sha256: Some(sha256_file(&package).unwrap()),
+            candidate_manifest: Some(manifest.clone()),
+            ..StateRecord::default()
+        })
+        .unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let pkexec = bin.join("pkexec");
+    fs::write(&pkexec, "#!/bin/sh\nexit 126\n").unwrap();
+    fs::set_permissions(&pkexec, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = command(root.path())
+        .env("PATH", &bin)
+        .args(["update", "--pid", "4242"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = store.load().unwrap();
+    assert_eq!(state.state, State::ReadyToInstall);
+    assert!(!state.install_requested);
+    assert_eq!(state.manual_command, None);
+    assert!(manifest.is_file());
+    assert!(package.is_file());
+}
+
+#[test]
 fn explicit_discard_removes_a_ready_candidate_and_returns_to_idle() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("home")).unwrap();

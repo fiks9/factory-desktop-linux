@@ -118,18 +118,50 @@ pub fn read_unattended(config: &Path) -> Result<bool, Error> {
     Ok(value)
 }
 
+#[derive(Debug)]
+pub enum InstallRequestError {
+    Spawn(std::io::Error),
+    AuthorizationDenied,
+    CommandFailed(Option<i32>),
+    InvalidOutput(std::string::FromUtf8Error),
+}
+
+impl std::fmt::Display for InstallRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(formatter, "could not start polkit: {error}"),
+            Self::AuthorizationDenied => {
+                write!(formatter, "polkit authorization was cancelled or denied")
+            }
+            Self::CommandFailed(code) => {
+                write!(formatter, "privileged install failed with status {code:?}")
+            }
+            Self::InvalidOutput(error) => write!(
+                formatter,
+                "privileged install returned invalid output: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InstallRequestError {}
+
 pub fn request_polkit_install(
     action: Action,
     manager_binary: &Path,
     manifest: &Path,
-) -> Result<String, Error> {
+) -> Result<String, InstallRequestError> {
     let output = Command::new("pkexec")
         .arg(manager_binary)
         .arg(action.command())
         .arg(manifest)
-        .output()?;
+        .output()
+        .map_err(InstallRequestError::Spawn)?;
     if !output.status.success() {
-        return Err(format!("polkit action {} was not authorized", action.policy_id()).into());
+        if output.status.code() == Some(126) {
+            return Err(InstallRequestError::AuthorizationDenied);
+        }
+        return Err(InstallRequestError::CommandFailed(output.status.code()));
     }
-    Ok(String::from_utf8(output.stdout)?)
+    String::from_utf8(output.stdout).map_err(InstallRequestError::InvalidOutput)
 }

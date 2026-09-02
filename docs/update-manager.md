@@ -46,6 +46,8 @@ network, build, and installation failures become terminal state with bounded
 diagnostics; the daemon does not repeatedly install or relaunch. The
 compatibility command `service` runs the same metadata-check loop.
 
+Transient startup metadata failures are retried by the in-app bridge with bounded backoff before an error dialog is shown. A manual retry remains available after those attempts are exhausted.
+
 ## States
 
 The external Linux state names are stable and lowercase:
@@ -58,10 +60,10 @@ The external Linux state names are stable and lowercase:
 | `downloading` | The user-triggered operation is acquiring the exact DMG. |
 | `building` | The isolated Node build pipeline is producing the candidate package. |
 | `validating` | Package inspection, hashes, and acceptance checks are running. |
-| `ready-to-install` | A validated candidate is retained and awaits the authenticated install step. |
+| `ready-to-install` | A validated candidate is retained and awaits the authenticated install step; cancelling polkit returns here so retrying does not download or rebuild the candidate. |
 | `installing` | Polkit-authenticated package installation or verified rollback is running. |
 | `installed` | The expected package version is installed and verified. |
-| `install-failed-manual-action` | Authentication, installation, or recovery needs an explicit operator action. |
+| `install-failed-manual-action` | A privileged command failed after authentication, or recovery needs an explicit operator action. |
 | `rolled-back` | Installation failed, but one known-good package was restored and verified. |
 | `failed` | Metadata, download, build, validation, or other non-install operation failed. |
 
