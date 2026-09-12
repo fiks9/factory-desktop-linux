@@ -17,22 +17,29 @@ user-authorized update operation:
    publishes `idle` or `update-available`. It does **not** download a DMG,
    build a package, or validate an artifact.
 2. `check-now` performs the same metadata-only check immediately. Repeated
-   daemon checks and startup checks are safe and do not create candidates.
+   daemon checks and startup checks are safe and do not create or replace a
+   retained validated candidate.
 3. Clicking **Update** in Factory starts `factory-update-manager update --pid
    PID`. This is the only operation that may prepare a candidate. Running as
    the desktop user, it downloads the exact upstream DMG, builds in an
    isolated candidate workspace, and validates the resulting package.
-4. After preparation succeeds, the state becomes `ready-to-install`. Only
-   then does the updater request authentication through polkit and begin
-   installation. The package manager verifies the installed version before
-   the operation is considered successful.
-5. The bridge initiates one controlled Electron relaunch/quit after the updater
-   waits for the Factory process tree, installs or rolls back, and verifies the
-   package-manager result. The fixed `/opt/Factory/factory-desktop-launcher`
-   identity is enforced for the relaunch. It occurs exactly once after a
-   verified `installed` or `rolled-back` result. No manual restart is required.
-   One process restart is still required internally for newly installed
-   Electron code to load; the bridge/updater performs it automatically.
+4. After preparation succeeds, the state becomes `ready-to-install`. The
+   updater sets `installRequested=true`, then the bridge requests one
+   controlled Electron quit. The updater waits up to 120 seconds for the
+   Factory process tree to exit before requesting authentication through
+   polkit and beginning installation.
+5. The package manager verifies the installed version before the operation
+   is considered successful. After a verified `installed` or `rolled-back`
+   result, the updater relaunches through the fixed
+   `/opt/Factory/factory-desktop-launcher` exactly once. No manual restart is
+   required; this process restart loads the newly installed Electron code.
+
+Cancelling Factory's close confirmation leaves the app running. When the
+exit wait times out, the updater clears `installRequested` and keeps the
+validated candidate in `ready-to-install`. No new quit or installation is
+requested automatically. Clicking **Update** again retries the exit/install
+step with the same package, without downloading or rebuilding it. Cancelling
+polkit authentication also returns to this retryable state.
 
 The default metadata-check interval is 21,600 seconds (six hours). It can be
 configured in `~/.config/factory-update-manager/config.toml`:
@@ -60,18 +67,18 @@ The external Linux state names are stable and lowercase:
 | `downloading` | The user-triggered operation is acquiring the exact DMG. |
 | `building` | The isolated Node build pipeline is producing the candidate package. |
 | `validating` | Package inspection, hashes, and acceptance checks are running. |
-| `ready-to-install` | A validated candidate is retained and awaits the authenticated install step; cancelling polkit returns here so retrying does not download or rebuild the candidate. |
+| `ready-to-install` | A validated candidate is retained and awaits the authenticated install step; cancelled/timed-out exit waits and cancelled polkit authentication return here so retrying does not download or rebuild the candidate. |
 | `installing` | Polkit-authenticated package installation or verified rollback is running. |
 | `installed` | The expected package version is installed and verified. |
 | `install-failed-manual-action` | A privileged command failed after authentication, or recovery needs an explicit operator action. |
 | `rolled-back` | Installation failed, but one known-good package was restored and verified. |
 | `failed` | Metadata, download, build, validation, or other non-install operation failed. |
 
-An active operation that crashes or becomes stale is recovered to a terminal
-failure/manual-action state with an error, rather than leaving an eternal
-`downloading`, `building`, `validating`, or `installing` spinner. Retained
-candidate files are not discarded until the terminal outcome or an explicit
-discard permits cleanup.
+Interrupted preparation becomes a terminal failure rather than leaving an
+eternal `downloading`, `building`, or `validating` spinner. An interrupted
+privileged `installing` operation requires manual action. A stale exit request
+for a `ready-to-install` candidate is released without failing or discarding
+the candidate. Retained files remain available across daemon and app restarts.
 
 ## Candidate and Process Safety
 
@@ -91,6 +98,16 @@ and manual-action states. Cleanup occurs only after `installed`,
 `rolled-back`, `failed`, explicit discard, or replacement by a newly accepted
 candidate.
 
+Older updater versions recorded an exit-wait timeout as `failed` while leaving
+candidate metadata behind. Before status recovery, a metadata check, or daemon
+startup cleanup can proceed, the updater restores these specific exit-wait
+failures to `ready-to-install` only when the complete state agrees with the
+retained manifest and the package is a regular file inside its candidate
+workspace with the recorded size and SHA-256. Missing, changed, inconsistent,
+or rejected artifacts are not promoted, and unrelated failures are not
+reclassified. Recovery clears the old install request; it never authorizes an
+installation itself.
+
 The package-owned Electron bridge lives at the fixed path
 `/usr/lib/factory-desktop/update-bridge.cjs`, mode `0644`, in deb/rpm packages.
 The fail-closed ASAR patch replaces only `updates:getState`, `updates:install`,
@@ -101,9 +118,10 @@ three whitelisted actions.
 
 `updates:install` starts the user-triggered operation from
 `update-available` or `ready-to-install`; it does not quit Factory immediately.
-The controlled exit occurs only after preparation is complete and the
-operation is ready for authenticated installation. Manual-action and failed
-states never enter an install/relaunch loop. `reconcile-install` is available
+The controlled exit occurs only after preparation is complete and
+`installRequested` is true. A retained `ready-to-install` candidate without a
+request never triggers another quit. Manual-action and failed states never
+enter an install/relaunch loop. `reconcile-install` is available
 after an authenticated terminal fallback and records `installed` only when
 the installed version exactly equals the expected candidate version.
 
@@ -111,8 +129,10 @@ the installed version exactly equals the expected candidate version.
 
 The ordinary install step performs one privileged request through polkit after
 download, build, and validation. Defaults require `auth_admin_keep` for
-`install-deb` or `install-rpm`. If polkit is unavailable or denied, state
-becomes `install-failed-manual-action` with a separate updater-generated
+`install-deb` or `install-rpm`. Denied or cancelled polkit authentication leaves
+the validated candidate in `ready-to-install` for an explicit retry. If polkit
+is unavailable or the privileged helper otherwise fails, state becomes
+`install-failed-manual-action` with a separate updater-generated
 `manualCommand`. The renderer may display or copy that command but cannot
 execute it, and no passwordless retry loop is attempted.
 

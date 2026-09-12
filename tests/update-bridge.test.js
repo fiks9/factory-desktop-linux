@@ -166,8 +166,8 @@ test("ready-to-install exits once for the active user operation", async () => {
   const statuses = [
     envelope("update-available", { availableVersion: "0.143.0" }),
     envelope("building", { version: "0.143.0" }),
-    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64) }),
-    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64) }),
+    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64), installRequested: true }),
+    envelope("ready-to-install", { version: "0.143.0", packageSha256: "b".repeat(64), installRequested: true }),
   ];
   const bridge = createBridge({
     ...HELPER_AVAILABLE,
@@ -189,6 +189,62 @@ test("ready-to-install exits once for the active user operation", async () => {
   assert.equal((await bridge.pollOnce()).linuxState, "ready-to-install");
 
   assert.deepEqual(calls, ["quit"]);
+});
+
+test("cancelled exit can retry the retained candidate in the same bridge", async () => {
+  let status = envelope("ready-to-install");
+  const spawns = [];
+  let quits = 0;
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => status,
+    spawn: (args) => spawns.push(args),
+    schedule: noSchedule(),
+    pid: 4242,
+    app: { getVersion: () => "0.139.0", quit: () => { quits += 1; } },
+  });
+
+  await bridge.install();
+  await bridge.pollOnce();
+  assert.equal(quits, 0, "a retained package alone is not an acknowledged install request");
+  status = envelope("ready-to-install", { installRequested: true });
+  await bridge.pollOnce();
+  assert.equal(quits, 1);
+
+  status = envelope("ready-to-install", { message: "Factory remains open; retry when ready" });
+  assert.equal((await bridge.pollOnce()).kind, "available");
+  await bridge.pollOnce();
+  assert.equal(quits, 1, "cancellation must not cause another automatic quit");
+  await bridge.checkNow();
+  assert.equal(spawns.length, 1, "checking must not replace the retained package");
+
+  await bridge.install();
+  await bridge.pollOnce();
+  assert.equal(quits, 1, "retry must wait for the new helper request");
+  status = envelope("ready-to-install", { installRequested: true });
+  await bridge.pollOnce();
+  await bridge.pollOnce();
+  assert.deepEqual(spawns, [
+    ["update", "--pid", "4242"],
+    ["update", "--pid", "4242"],
+  ]);
+  assert.equal(quits, 2);
+});
+
+test("failed operation releases the same-session metadata retry", async () => {
+  let status = envelope("update-available");
+  const spawns = [];
+  const bridge = createBridge({
+    ...HELPER_AVAILABLE,
+    run: async () => status,
+    spawn: (args) => spawns.push(args),
+    schedule: noSchedule(),
+    app: { getVersion: () => "0.139.0" },
+  });
+  await bridge.install();
+  status = envelope("failed");
+  assert.equal((await bridge.checkNow()).linuxState, "checking");
+  assert.equal(spawns.at(-1)[0], "check-now");
 });
 
 test("persisted installed or rolled-back state does not exit or relaunch a new bridge", async () => {

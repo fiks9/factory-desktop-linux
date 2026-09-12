@@ -83,14 +83,14 @@ only after structural/version acceptance. Do not hand-edit this index.
 | whole-bundle JavaScript syntax | required `bundle-javascript-syntax` outcome plus staged and extracted parse-only checks |
 | product-named ELF | `factory-desktop`, never `electron` |
 | protocol MIME | `x-scheme-handler/factory-desktop` present |
-| StartupWMClass | `Factory` present |
+| StartupWMClass | `factory` matches the running window |
 | keyring | `FACTORY_DISABLE_KEYRING=1` present |
 | update bridge | fixed native path/mode; absent from AppImage |
 | metadata-only checks | startup, daemon, and `check-now` never download/build/validate |
 | user-triggered preparation | Update click invokes `update --pid PID`; states reach downloading/building/validating/ready-to-install |
 | authenticated install | polkit is requested only after preparation; package-manager version is exact |
 | controlled relaunch | one verified install/rollback, one automatic relaunch; no manual restart step |
-| stale-operation recovery | crash/stale active state resolves to terminal failure/manual action, not an eternal spinner |
+| stale-operation recovery | preparation failure terminates; interrupted exit wait releases the request and retains the validated candidate for retry |
 | approval security tests | traversal/hash/expiry/replay/ownership reject |
 | rollback verification | package query equals known-good version |
 

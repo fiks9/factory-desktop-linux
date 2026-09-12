@@ -6,7 +6,9 @@ use factory_update_manager::approval::{
 use factory_update_manager::builder::{BuildRequest, NodeBuilder, PackageFormat};
 use factory_update_manager::cache::{candidate_id_for_digest, DmgCache};
 use factory_update_manager::cleanup::cleanup;
-use factory_update_manager::daemon::{blocks_new_candidate, read_check_interval_seconds};
+use factory_update_manager::daemon::{
+    blocks_new_candidate, is_stale, read_check_interval_seconds, recover_interrupted_operation,
+};
 use factory_update_manager::diagnose::diagnose;
 use factory_update_manager::install::{install_validated, InstallOutcome};
 use factory_update_manager::locks::UpdateLock;
@@ -261,12 +263,20 @@ fn wait_for_factory_exit(parent_pid: u32) -> Result<(), Error> {
         PathBuf::from("/proc")
     };
     let parent = proc_root.join(parent_pid.to_string());
-    let timeout = Duration::from_secs(120);
+    let timeout = if cfg!(debug_assertions) {
+        std::env::var("FACTORY_TEST_EXIT_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(120))
+    } else {
+        Duration::from_secs(120)
+    };
     let poll_interval = Duration::from_millis(500);
     let mut elapsed = Duration::ZERO;
     while parent.exists() || app_is_running() {
         if elapsed >= timeout {
-            return fail_active_operation("timed out waiting for Factory Desktop to exit");
+            return cancel_install_request("timed out waiting for Factory Desktop to exit");
         }
         thread::sleep(poll_interval);
         elapsed = elapsed.saturating_add(poll_interval);
@@ -274,11 +284,19 @@ fn wait_for_factory_exit(parent_pid: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn fail_active_operation(message: &str) -> Result<(), Error> {
+fn cancel_install_request(message: &str) -> Result<(), Error> {
     with_locked_user_state(|_, store, mut state| {
-        state.install_requested = false;
-        state.relaunch_pending = false;
-        transition(store, &mut state, State::Failed, message)?;
+        if state.state == State::ReadyToInstall && state.install_requested {
+            state.install_requested = false;
+            state.relaunch_pending = false;
+            state.relaunch_error = None;
+            transition(
+                store,
+                &mut state,
+                State::ReadyToInstall,
+                &format!("{message}; the validated update remains ready to retry"),
+            )?;
+        }
         Err(message.into())
     })
 }
@@ -323,9 +341,12 @@ fn with_user_state<T>(
     paths.ensure_all()?;
     let store = StateStore::new(paths.state_file());
     let mut state = store.load()?;
-    if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+    if state.state == State::Failed || is_stale(&state, chrono::Utc::now()) {
         let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
-        store.save(&state)?;
+        state = store.load()?;
+        if recover_interrupted_operation(&paths, &mut state, chrono::Utc::now()) {
+            store.save(&state)?;
+        }
     }
     operation(&paths, &store, state)
 }
@@ -338,7 +359,7 @@ fn with_locked_user_state<T>(
     let store = StateStore::new(paths.state_file());
     let _lock = UpdateLock::acquire(&paths.state_lock_file())?;
     let mut state = store.load()?;
-    if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+    if recover_interrupted_operation(&paths, &mut state, chrono::Utc::now()) {
         store.save(&state)?;
     }
     operation(&paths, &store, state)
@@ -839,7 +860,7 @@ fn recover_interrupted_install(paths: &Paths) -> Result<StateRecord, Error> {
             State::InstallFailedManualAction,
             "interrupted privileged installation requires explicit user action",
         )?;
-    } else if factory_update_manager::daemon::recover_stale_state(&mut state, chrono::Utc::now()) {
+    } else if recover_interrupted_operation(paths, &mut state, chrono::Utc::now()) {
         store.save(&state)?;
     }
     cleanup(paths, &state)?;

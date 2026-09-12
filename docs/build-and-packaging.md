@@ -55,7 +55,7 @@ metadata, and registers `factory-desktop://` where an active user session is
 available.
 
 The desktop entry includes `FACTORY_DISABLE_KEYRING=1`,
-`MimeType=x-scheme-handler/factory-desktop;`, and `StartupWMClass=Factory`.
+`MimeType=x-scheme-handler/factory-desktop;`, and `StartupWMClass=factory`.
 
 ## Product Binary Name
 

@@ -255,7 +255,20 @@ function createBridge(overrides = {}) {
   }
 
   async function getState() {
-    return runStatus(["status", "--json"]);
+    const state = await runStatus(["status", "--json"]);
+    if (
+      updateOperationRequested
+      && !state.installRequested
+      && (
+        (exitRequested && state.linuxState === "ready-to-install")
+        || ["failed", "install-failed-manual-action", "installed", "rolled-back"].includes(state.linuxState)
+      )
+    ) {
+      updateOperationRequested = false;
+      relaunchArmed = false;
+      exitRequested = false;
+    }
+    return state;
   }
 
   async function checkNow() {
@@ -354,7 +367,7 @@ function createBridge(overrides = {}) {
         }
       }
     }
-    if (relaunchArmed && !exitRequested && current.linuxState === "ready-to-install") {
+    if (relaunchArmed && !exitRequested && current.linuxState === "ready-to-install" && current.installRequested) {
       exitRequested = true;
       try {
         app?.quit?.();

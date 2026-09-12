@@ -24,6 +24,11 @@
 - No update notification at startup: this is expected to be metadata-only.
   Inspect `factory-update-manager status --json`; startup and `check-now` never
   download or build a candidate.
+- Duplicate dock icons: compare the window's `WM_CLASS` with
+  `StartupWMClass=factory`. A user-owned
+  `~/.local/share/applications/factory-desktop.desktop` overrides the packaged
+  entry; older entries using `StartupWMClass=Factory` or bypassing
+  `/opt/Factory/factory-desktop-launcher` must be corrected as well.
 
 ## Install And Recovery
 
@@ -33,9 +38,12 @@
 - `downloading`, `building`, or `validating`: the user-triggered preparation is
   active. Keep Factory open; polkit and installation occur only after
   `ready-to-install`.
-- `ready-to-install`: preparation and validation succeeded. The updater now
-  requests polkit authentication and controls the bounded Factory exit. Do not
-  quit the app manually to trigger installation.
+- `ready-to-install`: preparation and validation succeeded. During an active
+  install request the bridge asks Factory to exit gracefully, then the updater
+  requests polkit authentication. If you cancel the active-session quit dialog,
+  the bounded exit wait releases the request and retains the validated package.
+  Click **Update** again when the session is finished; metadata checks and a
+  normal app restart do not discard that package or start another download.
 - `install-failed-manual-action`: copy the updater-owned `manualCommand`, then
   run `reconcile-install` only after the authenticated package command has
   completed. Do not execute arbitrary renderer text or paths.
