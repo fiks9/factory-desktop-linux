@@ -107,13 +107,13 @@ function validateWindowControls(files) {
   const markerCount = (all.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length;
   const syncMarkerCount = (all.match(/\/\* factory-linux:linux-window-controls-theme-sync \*\//g) || []).length;
   const syncEndMarkerCount = (all.match(/\/\* factory-linux:linux-window-controls-theme-sync-end \*\//g) || []).length;
-  const overlays = [...all.matchAll(/titleBarOverlay:process\.platform==="linux"\?\{color:([A-Za-z_$][\w$]*)\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0",symbolColor:\1\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000",height:26\}:void 0/g)];
+  const overlays = [...all.matchAll(/titleBarOverlay:process\.platform==="linux"\?\{color:([A-Za-z_$][\w$]*)\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0",symbolColor:\1\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000",height:26\}:(?:void 0|[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}:void 0)/g)];
   const runtime = all.match(/const factoryLinuxApplyWindowControlsTheme=\(\)=>\{if\(([A-Za-z_$][\w$]*)\.isDestroyed\(\)\)return;const factoryLinuxDarkTheme=([A-Za-z_$][\w$]*)\.nativeTheme\.shouldUseDarkColors;\1\.setTitleBarOverlay\(\{color:factoryLinuxDarkTheme\?"#161413":"#f2f0f0",symbolColor:factoryLinuxDarkTheme\?"#f2f0f0":"#000000",height:26\}\)\};if\(process\.platform==="linux"\)\{factoryLinuxApplyWindowControlsTheme\(\);\2\.nativeTheme\.on\("updated",factoryLinuxApplyWindowControlsTheme\);\1\.once\("closed",\(\)=>\2\.nativeTheme\.removeListener\("updated",factoryLinuxApplyWindowControlsTheme\)\)\};/);
   const overlayCount = overlays.length;
   const runtimeCount = (all.match(/const factoryLinuxApplyWindowControlsTheme=/g) || []).length;
   const legacyOverlayCount = (all.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
   const iconCount = (all.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
-  const unpatchedCount = (all.match(/titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g) || []).length;
+  const unpatchedCount = (all.match(/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}:void 0,trafficLightPosition:[A-Za-z_$][\w$]*\?void 0:\{x:12,y:10\},/g) || []).length;
   const validationPassed = markerCount === 1
     && syncMarkerCount === 1
     && syncEndMarkerCount === 1

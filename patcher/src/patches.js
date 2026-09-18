@@ -43,7 +43,7 @@ function windowControls(files) {
   const marker = MARKER(id);
   const syncMarker = MARKER("linux-window-controls-theme-sync");
   const syncEndMarker = MARKER("linux-window-controls-theme-sync-end");
-  const upstreamPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
+  const upstreamPattern = /titleBarStyle:"hidden",titleBarOverlay:([A-Za-z_$][\w$]*)\?(\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}):void 0,trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
   const legacyPattern = /titleBarStyle:([A-Za-z_$][\w$]*)\?"default":"hidden",\/\* factory-linux:linux-window-controls \*\/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0,icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0,trafficLightPosition:\1\?void 0:\{x:12,y:10\},/g;
   const currentMatches = [];
   const legacyMatches = [];
@@ -59,13 +59,13 @@ function windowControls(files) {
     markerCount += (file.content.match(/\/\* factory-linux:linux-window-controls \*\//g) || []).length;
     syncMarkerCount += (file.content.match(/\/\* factory-linux:linux-window-controls-theme-sync \*\//g) || []).length;
     syncEndMarkerCount += (file.content.match(/\/\* factory-linux:linux-window-controls-theme-sync-end \*\//g) || []).length;
-    overlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0",symbolColor:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000",height:26\}:void 0/g) || []).length;
+    overlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#161413":"#f2f0f0",symbolColor:[A-Za-z_$][\w$]*\.nativeTheme\.shouldUseDarkColors\?"#f2f0f0":"#000000",height:26\}:(?:void 0|[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}:void 0)/g) || []).length;
     legacyOverlayCount += (file.content.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
     iconCount += (file.content.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
     listenerCount += (file.content.match(/\.nativeTheme\.on\("updated",factoryLinuxApplyWindowControlsTheme\)/g) || []).length;
     cleanupCount += (file.content.match(/\.nativeTheme\.removeListener\("updated",factoryLinuxApplyWindowControlsTheme\)/g) || []).length;
     for (const match of file.content.matchAll(upstreamPattern)) {
-      currentMatches.push({ file, text: match[0], alias: match[1] });
+      currentMatches.push({ file, text: match[0], alias: match[1], overlay: match[2] });
     }
     for (const match of file.content.matchAll(legacyPattern)) {
       legacyMatches.push({ file, text: match[0], alias: match[1], index: match.index });
@@ -144,7 +144,8 @@ function windowControls(files) {
     });
   }
   const { windowAlias, electronAlias, anchor, anchorIndex } = context;
-  const replacement = `titleBarStyle:${alias}?"default":"hidden",${marker}titleBarOverlay:process.platform==="linux"?{color:${electronAlias}.nativeTheme.shouldUseDarkColors?"#161413":"#f2f0f0",symbolColor:${electronAlias}.nativeTheme.shouldUseDarkColors?"#f2f0f0":"#000000",height:26}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:${alias}?void 0:{x:12,y:10},`;
+  const overlayFallback = upstreamCandidate ? `${alias}?${match.overlay}:void 0` : "void 0";
+  const replacement = `titleBarStyle:"hidden",${marker}titleBarOverlay:process.platform==="linux"?{color:${electronAlias}.nativeTheme.shouldUseDarkColors?"#161413":"#f2f0f0",symbolColor:${electronAlias}.nativeTheme.shouldUseDarkColors?"#f2f0f0":"#000000",height:26}:${overlayFallback},icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:${alias}?void 0:{x:12,y:10},`;
   let content = file.content.slice(0, propertyIndex) + replacement + file.content.slice(propertyIndex + text.length);
   const anchorShift = replacement.length - text.length;
   const insertAt = anchorIndex + anchorShift + anchor.length;
@@ -154,6 +155,7 @@ function windowControls(files) {
     file: file.path,
     matchCount: 1,
     migratedLegacyOverlay: legacyCandidate,
+    upstreamOverlay: upstreamCandidate ? match.overlay : null,
     windowAlias,
     electronAlias,
     webContentsAlias: context.webContentsAlias,

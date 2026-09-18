@@ -26,13 +26,13 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:win32?\"default\":\"hidden\",trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});const factoryContents=factoryWindow.webContents;W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:\"hidden\",titleBarOverlay:win32?{...overlayTheme(),height:overlayScale(1)}:void 0,trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});if(win32){factoryWindow.setMenuBarVisibility(!1);const themeSync=()=>{factoryWindow.isDestroyed()||factoryWindow.setTitleBarOverlay(overlayTheme())};W.nativeTheme.on(\"updated\",themeSync),factoryWindow.on(\"closed\",()=>{W.nativeTheme.removeListener(\"updated\",themeSync)})}const factoryContents=factoryWindow.webContents;W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
 }
 
 function legacyStaticWindowBundle() {
   return rawBundle().replace(
-    'titleBarStyle:win32?"default":"hidden",trafficLightPosition:win32?void 0:{x:12,y:10},',
-    'titleBarStyle:win32?"default":"hidden",/* factory-linux:linux-window-controls */titleBarOverlay:process.platform==="linux"?{color:"#171717",symbolColor:"#f5f5f5",height:30}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:win32?void 0:{x:12,y:10},',
+    'titleBarStyle:"hidden",titleBarOverlay:win32?{...overlayTheme(),height:overlayScale(1)}:void 0,trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}',
+    'titleBarStyle:win32?"default":"hidden",/* factory-linux:linux-window-controls */titleBarOverlay:process.platform==="linux"?{color:"#171717",symbolColor:"#f5f5f5",height:30}:void 0,icon:process.platform==="linux"?process.resourcesPath+"/factory-desktop.png":void 0,trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}',
   );
 }
 
@@ -102,7 +102,7 @@ test("Linux window controls patch follows Factory nativeTheme and cleans up its 
   assert.match(patched, /W\.nativeTheme\.removeListener\("updated",factoryLinuxApplyWindowControlsTheme\)/);
   assert.doesNotMatch(patched, /color:"#171717",symbolColor:"#f5f5f5"/);
   assert.equal((patched.match(/icon:process\.platform===\"linux\"\?process\.resourcesPath\+\"\/factory-desktop\.png\"/g) || []).length, 1);
-  assert.doesNotMatch(patched, /titleBarStyle:win32\?"default":"hidden",trafficLightPosition/);
+  assert.doesNotMatch(patched, /titleBarStyle:"hidden",titleBarOverlay:win32\?/);
 
   const runtimeStart = patched.indexOf("/* factory-linux:linux-window-controls-theme-sync */");
   const runtimeEnd = patched.indexOf("/* factory-linux:linux-window-controls-theme-sync-end */", runtimeStart);
