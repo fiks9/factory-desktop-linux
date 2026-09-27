@@ -26,7 +26,7 @@ function rawBundle(transport = "hardcoded") {
   const resolver = transport === "statsig"
     ? "async function XX(){const e=YY.DesktopDaemonIpc;return(await getFlag())[e.statsigName]??e.defaultValue?TT.Ipc:TT.WebSocket}"
     : "function BVe(){return fc.Ipc}";
-  return `${resolver} function dv(){return\"droid-dev\"} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){let r;if(W.app.isPackaged)r=X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\");else r=dv();const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:\"hidden\",titleBarOverlay:win32?{...overlayTheme(),height:overlayScale(1)}:void 0,trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});if(win32){factoryWindow.setMenuBarVisibility(!1);const themeSync=()=>{factoryWindow.isDestroyed()||factoryWindow.setTitleBarOverlay(overlayTheme())};W.nativeTheme.on(\"updated\",themeSync),factoryWindow.on(\"closed\",()=>{W.nativeTheme.removeListener(\"updated\",themeSync)})}const factoryContents=factoryWindow.webContents;W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
+  return `${resolver} function factorySJ(){if(W.app.isPackaged)return;return{kind:\"source\",checkoutRoot:\"/dev/repo\"}}function factoryJct(){const e=factorySJ();if(!e)throw new Error(\"Dev daemon launch requires an unpackaged build\");return e}function factoryQct(e){return{command:e.checkoutRoot+\"/droid\",prefixArgs:[]}} async function start(){return resolveTransportMode()} function resolveTransportMode(){return BVe()} function daemon(){const n=W.app.isPackaged?X.join(process.resourcesPath,\"bin\",process.platform===\"win32\"?\"droid.exe\":\"droid\"):void 0,{command:r}=n?{command:n}:factoryQct(factoryJct());const t=fc.Ipc&&a.push(\"--listen\",\"ipc\");W.app.isPackaged||a.push(\"--debug\");const h={transportMode:t};/* --enable-child-ipc */} const win32=process.platform===\"win32\",factoryWindow=new W.BrowserWindow({titleBarStyle:\"hidden\",titleBarOverlay:win32?{...overlayTheme(),height:overlayScale(1)}:void 0,trafficLightPosition:win32?void 0:{x:12,y:10},webPreferences:{}});if(win32){factoryWindow.setMenuBarVisibility(!1);const themeSync=()=>{factoryWindow.isDestroyed()||factoryWindow.setTitleBarOverlay(overlayTheme())};W.nativeTheme.on(\"updated\",themeSync),factoryWindow.on(\"closed\",()=>{W.nativeTheme.removeListener(\"updated\",themeSync)})}const factoryContents=factoryWindow.webContents;W.ipcMain.handle(\"updates:getState\",async()=>legacyGetState());W.ipcMain.handle(\"updates:install\",async()=>legacyInstall());W.ipcMain.handle(\"updates:checkNow\",async()=>legacyCheckNow());W.autoUpdater.checkForUpdates();W.autoUpdater.quitAndInstall(); const daemonController={async startInternal(){this.state=Hn.Starting;this.currentPort=r;let l;if(r!==null){spawn()}}}`;
 }
 
 function legacyStaticWindowBundle() {
@@ -155,6 +155,16 @@ test("Linux window controls patch fails closed when the BrowserWindow contract d
   const { asarPath } = await fixture(drifted);
 
   await assert.rejects(() => patchAsar({ asarPath }), /linux-window-controls/);
+});
+
+test("packaged daemon mode validator fails closed when the dev resolver contract drifts", async () => {
+  const drifted = rawBundle().replace(
+    'if(!e)throw new Error("Dev daemon launch requires an unpackaged build");return e}',
+    'return e}',
+  );
+  const { asarPath } = await fixture(drifted);
+
+  await assert.rejects(() => patchAsar({ asarPath }), /packaged-daemon-mode/);
 });
 
 test("statsig resolver uses the structural matcher", async () => {

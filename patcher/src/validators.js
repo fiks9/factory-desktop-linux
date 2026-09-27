@@ -134,29 +134,29 @@ function validateWindowControls(files) {
 function validatePackagedDaemonMode(files) {
   let debugCalls = 0;
   let unguardedDebug = 0;
-  let packagedDroidBranch = false;
-  let resolverName = null;
+  let packagedTernary = false;
+  let devRootGuard = false;
+  let devThrow = false;
+  const ternaryPattern = /[\w$]+\.app\.isPackaged\?\(\(\)=>\{\/\* factory-linux:system-droid-cli-resolver \*\/[\s\S]{0,3000}?\}\)\(\):void 0/;
+  const devRootPattern = /function [\w$]+\(\)\{if\([\w$]+\.app\.isPackaged\)return;/;
+  const devThrowPattern = /new [\w$]+\("Dev daemon launch requires an unpackaged build"\)/;
   for (const file of files) {
     const builderAt = file.content.indexOf("--enable-child-ipc");
     const builder = builderAt >= 0
       ? file.content.slice(Math.max(0, builderAt - 2200), builderAt + 900)
       : file.content;
-    const branch = builder.match(/if\(([\w$]+)\.app\.isPackaged\)([\w$]+)=[\s\S]{0,1500}?else \2=([\w$]+)\(\);/);
-    if (branch) {
-      resolverName = branch[3];
-      const escaped = resolverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const resolver = file.content.match(new RegExp(`function ${escaped}\\(\\)\\{[\\s\\S]{0,700}?\\}`));
-      packagedDroidBranch = Boolean(resolver && resolver[0].includes('return"droid-dev"'));
-    }
+    packagedTernary ||= ternaryPattern.test(file.content);
+    devRootGuard ||= devRootPattern.test(file.content);
+    devThrow ||= devThrowPattern.test(file.content);
     const calls = [...builder.matchAll(/([\w$]+)\.push\("--debug"\)/g)];
     debugCalls += calls.length;
     unguardedDebug += calls.filter((call) => !/\.app\.isPackaged\|\|$/.test(builder.slice(Math.max(0, call.index - 100), call.index))).length;
   }
-  const validationPassed = debugCalls > 0 && unguardedDebug === 0 && packagedDroidBranch;
+  const validationPassed = debugCalls > 0 && unguardedDebug === 0 && packagedTernary && devRootGuard && devThrow;
   return {
     validationPassed,
-    evidence: { debugCalls, unguardedDebug, packagedDroidBranch, resolverName },
-    errors: validationPassed ? [] : ["Could not prove packaged mode excludes droid-dev and daemon --debug arguments."],
+    evidence: { debugCalls, unguardedDebug, packagedTernary, devRootGuard, devThrow },
+    errors: validationPassed ? [] : ["Could not prove packaged mode excludes dev daemon resolution and daemon --debug arguments."],
   };
 }
 

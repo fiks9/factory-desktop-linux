@@ -34,7 +34,7 @@ function packagingOutcomes(projectRoot) {
 
 function runtimeOutcomes(files) {
   const result = validators.validatePackagedDaemonMode(files);
-  return [{ id: "packaged-daemon-mode", description: "Prove packaged daemon paths exclude development arguments", phase: "post-patch-validation", ciPolicy: CRITICAL_POLICY, matchStrategy: "app.isPackaged daemon branch validator", matched: true, patched: false, alreadyPatched: true, validationPassed: result.validationPassed, errors: result.errors, evidence: result.evidence }];
+  return [{ id: "packaged-daemon-mode", description: "Prove packaged daemon paths exclude development arguments", phase: "post-patch-validation", ciPolicy: CRITICAL_POLICY, matchStrategy: "app.isPackaged daemon ternary plus dev resolver guard validator", matched: true, patched: false, alreadyPatched: true, validationPassed: result.validationPassed, errors: result.errors, evidence: result.evidence }];
 }
 
 function syntaxOutcome(files, originalContents) {
