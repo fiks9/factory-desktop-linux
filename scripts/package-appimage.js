@@ -9,10 +9,10 @@ const {writePackageBuildInfo}=require("./release-metadata");
 const {validateAppJavaScript}=require("./validate-app-javascript");
 const {releaseIdentity}=require("./release-identity");
 
-const APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage";
-const APPIMAGETOOL_SHA256="a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0";
-const APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64";
-const APPIMAGE_RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf";
+const APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage";
+const APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0";
+const APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64";
+const APPIMAGE_RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d";
 
 function download(url,target,redirects=0){if(redirects>5)return Promise.reject(new Error("appimagetool download exceeded redirect limit"));return new Promise((resolve,reject)=>{const request=https.get(url,(response)=>{if(response.statusCode>=300&&response.statusCode<400&&response.headers.location){response.resume();download(new URL(response.headers.location,url).toString(),target,redirects+1).then(resolve,reject);return}if(response.statusCode<200||response.statusCode>=300){response.resume();reject(new Error(`appimagetool download returned HTTP ${response.statusCode}`));return}const output=fs.createWriteStream(target,{mode:0o755});stream.pipeline(response,output).then(resolve,reject)});request.on("error",reject)})}
 
