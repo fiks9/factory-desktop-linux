@@ -36,6 +36,12 @@ function legacyStaticWindowBundle() {
   );
 }
 
+function computedTrafficLightBundle() {
+  return rawBundle()
+    .replace('function BVe(){return fc.Ipc}', 'function BVe(){return fc.Ipc}function trafficLightY(e){return{x:12,y:Math.max(0,Math.round((24*e-4)/2))}}')
+    .replace('trafficLightPosition:win32?void 0:{x:12,y:10}', 'trafficLightPosition:win32?void 0:trafficLightY(1)');
+}
+
 function commaExpressionBundle() {
   return rawBundle().replace(
     'W.ipcMain.handle("updates:getState",async()=>legacyGetState());W.ipcMain.handle("updates:install",async()=>legacyInstall());W.ipcMain.handle("updates:checkNow",async()=>legacyCheckNow());',
@@ -145,6 +151,26 @@ test("Linux window controls patch migrates the legacy static overlay", async () 
   assert.equal(outcome.validationPassed, true);
   assert.match(patched, /factory-linux:linux-window-controls-theme-sync/);
   assert.doesNotMatch(patched, /color:"#171717",symbolColor:"#f5f5f5"/);
+});
+
+test("Linux window controls patch preserves Factory's computed traffic-light position", async () => {
+  const { asarPath } = await fixture(computedTrafficLightBundle());
+
+  const report = await patchAsar({ asarPath });
+  const outcome = report.outcomes.find((item) => item.id === "linux-window-controls");
+  const patched = asar.extractFile(asarPath, ".vite/build/index.js").toString("utf8");
+
+  assert.equal(outcome.matched, true);
+  assert.equal(outcome.patched, true);
+  assert.equal(outcome.validationPassed, true);
+  assert.equal(outcome.evidence.upstreamTrafficLightPosition, "trafficLightY(1)");
+  assert.match(patched, /trafficLightPosition:win32\?void 0:trafficLightY\(1\),/);
+  assert.doesNotMatch(patched, /titleBarStyle:"hidden",titleBarOverlay:win32\?/);
+
+  const second = await patchAsar({ asarPath });
+  const secondOutcome = second.outcomes.find((item) => item.id === "linux-window-controls");
+  assert.equal(secondOutcome.alreadyPatched, true);
+  assert.equal(secondOutcome.validationPassed, true);
 });
 
 test("Linux window controls patch fails closed when the BrowserWindow contract drifts", async () => {

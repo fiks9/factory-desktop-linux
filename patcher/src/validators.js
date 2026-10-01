@@ -113,7 +113,7 @@ function validateWindowControls(files) {
   const runtimeCount = (all.match(/const factoryLinuxApplyWindowControlsTheme=/g) || []).length;
   const legacyOverlayCount = (all.match(/titleBarOverlay:process\.platform==="linux"\?\{color:"#171717",symbolColor:"#f5f5f5",height:30\}:void 0/g) || []).length;
   const iconCount = (all.match(/icon:process\.platform==="linux"\?process\.resourcesPath\+"\/factory-desktop\.png":void 0/g) || []).length;
-  const unpatchedCount = (all.match(/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}:void 0,trafficLightPosition:[A-Za-z_$][\w$]*\?void 0:\{x:12,y:10\},/g) || []).length;
+  const unpatchedCount = (all.match(/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\(\),height:[A-Za-z_$][\w$]*\(\d+\)\}:void 0,trafficLightPosition:[A-Za-z_$][\w$]*\?void 0:(?:\{x:12,y:10\}|[A-Za-z_$][\w$]*\(\d+\)),/g) || []).length;
   const validationPassed = markerCount === 1
     && syncMarkerCount === 1
     && syncEndMarkerCount === 1
